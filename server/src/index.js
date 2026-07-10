@@ -188,6 +188,9 @@ app.post('/document/:id/generate-alternative', ensureSession, rateLimitMiddlewar
   if (instruction !== undefined && typeof instruction !== 'string') {
     return res.status(400).json({ error: 'instruction must be a string if provided' });
   }
+  if (typeof instruction === 'string' && instruction.length > 200) {
+    return res.status(400).json({ error: 'Instruction too long (max 200 characters)' });
+  }
 
   const db = getDb();
   const docId = req.params.id;
