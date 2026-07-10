@@ -1,0 +1,144 @@
+.instruction-panel {
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  padding: 1.25rem 1.5rem;
+  max-width: 720px;
+  margin: 0 auto 1.5rem;
+}
+
+.instruction-panel__label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #57606a;
+  display: block;
+  margin-bottom: 0.4rem;
+}
+
+.instruction-panel__quote {
+  margin: 0 0 1rem 0;
+  padding: 0.5rem 0.75rem;
+  border-left: 3px solid #e5e7eb;
+  color: #1f2328;
+  font-size: 0.95rem;
+  line-height: 1.6;
+  background: #f7f8fa;
+  border-radius: 0 4px 4px 0;
+  word-break: break-word;
+}
+
+.instruction-panel__presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+
+.preset-chip {
+  padding: 0.3rem 0.8rem;
+  border: 1px solid #e5e7eb;
+  border-radius: 999px;
+  background: #f7f8fa;
+  color: #1f2328;
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.preset-chip:hover:not(:disabled) {
+  border-color: #3b82d4;
+  background: #eef4fd;
+}
+
+.preset-chip--active {
+  border-color: #3b82d4;
+  background: #eef4fd;
+  color: #3b82d4;
+  font-weight: 500;
+}
+
+.preset-chip:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.instruction-panel__input-row {
+  margin-bottom: 0.75rem;
+}
+
+.instruction-panel__input {
+  width: 100%;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid #e5e7eb;
+  border-radius: 4px;
+  font-size: 0.95rem;
+  color: #1f2328;
+  background: #ffffff;
+  outline: none;
+  box-sizing: border-box;
+}
+
+.instruction-panel__input:focus {
+  border-color: #3b82d4;
+}
+
+.instruction-panel__input:disabled {
+  background: #f7f8fa;
+  color: #57606a;
+}
+
+.instruction-panel__error {
+  color: #c0392b;
+  font-size: 0.85rem;
+  margin: 0 0 0.75rem;
+}
+
+.instruction-panel__actions {
+  display: flex;
+  gap: 0.5rem;
+  justify-content: flex-end;
+}
+
+/* Shared button styles (also used by ReviewPanel) */
+.btn {
+  padding: 0.45rem 1rem;
+  border-radius: 4px;
+  font-size: 0.9rem;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.btn--primary {
+  background: #3b82d4;
+  color: #ffffff;
+  border-color: #3b82d4;
+}
+
+.btn--primary:hover:not(:disabled) {
+  background: #2563b0;
+  border-color: #2563b0;
+}
+
+.btn--primary:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.btn--ghost {
+  background: transparent;
+  color: #57606a;
+  border-color: #e5e7eb;
+}
+
+.btn--ghost:hover:not(:disabled) {
+  background: #f7f8fa;
+  border-color: #bbc0c9;
+}
+
+.btn--ghost:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

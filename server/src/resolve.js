@@ -68,7 +68,9 @@ function resolveDocument(documentId) {
       // Recurse into fork's branch_content (fork owns this segment)
       const childSegments = descend(fork.branch_content, fork.id, outputOffset);
       segments.push(...childSegments);
-      outputOffset += fork.branch_content.length; // approximate — recursive descent tracks its own offsets
+      // Advance by the *resolved* length of the child subtree, not branch_content.length —
+      // they differ when the child has active sub-forks of different length.
+      outputOffset += childSegments.reduce((sum, s) => sum + s.text.length, 0);
 
       cursor = fork.anchor_end;
     }

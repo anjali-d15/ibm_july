@@ -1,0 +1,51 @@
+.app {
+  position: relative;
+  min-height: 100vh;
+}
+
+/* Overlay panels (instruction / review) sit above the editor */
+.app__overlay-panel {
+  position: sticky;
+  top: 57px; /* below the editor header */
+  z-index: 20;
+  padding: 1rem 1.5rem 0;
+  max-width: 760px;
+  margin: 0 auto;
+}
+
+/* Floating action bar that appears on valid selection */
+.app__fork-bar {
+  position: fixed;
+  bottom: 2rem;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  background: #1f2328;
+  border-radius: 6px;
+  padding: 0.5rem 0.75rem;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.18);
+}
+
+.fork-bar__btn {
+  background: #3b82d4;
+  color: #ffffff;
+  border: none;
+  border-radius: 4px;
+  padding: 0.4rem 1rem;
+  font-size: 0.9rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.fork-bar__btn:hover {
+  background: #2563b0;
+}
+
+.fork-bar__warn {
+  color: #f0a84a;
+  font-size: 0.82rem;
+  white-space: nowrap;
+}

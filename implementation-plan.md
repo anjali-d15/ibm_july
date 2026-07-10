@@ -52,7 +52,9 @@ at any point recomputes what the document looks like.
 
 ### Single hardcoded document
 The app operates on one document, seeded at DB startup with sample text using
-`INSERT OR IGNORE`. No `POST /document` endpoint, no document list, no routing.
+an upsert (`INSERT ... ON CONFLICT DO UPDATE`) that only overwrites `root_content`
+when it is empty, so real user edits survive restarts. No `POST /document`
+endpoint, no document list, no routing.
 
 ## Tree Resolution — Server-Side Only
 
@@ -143,21 +145,36 @@ which is out of scope for this build.
 3. Frontend immediately disables the "generate alternative" action
    (optimistic UI lock) to prevent double-submission before the backend
    responds.
-4. Frontend sends `{ segment_fork_id, anchor_start, anchor_end, selected_text }`
-   to the generate-alternative endpoint. `segment_fork_id` is read from the
-   segment tag in the `/resolved` array — the frontend does not re-derive it.
-   Backend validates that the selection falls within a single segment.
+4. Frontend presents an optional instruction step: a free-form text input
+   ("make this colder," "have her forgive him") and four preset chips —
+   **Warmer**, **Colder**, **More concise**, **Surprise me**. Selecting a
+   preset populates the text input; the user may also type freely or leave it
+   blank entirely. Frontend then sends:
+   ```
+   { segment_fork_id, anchor_start, anchor_end, selected_text, instruction?: string }
+   ```
+   `instruction` is omitted (or `""`) when the user leaves the field blank.
+   `segment_fork_id` is read from the segment tag in the `/resolved` array —
+   the frontend does not re-derive it. Backend validates that the selection
+   falls within a single segment.
 5. Backend attempts to `INSERT` a new `Fork` row (`status=proposed`,
    `is_active=false`) as a single atomic operation relying on the partial
    unique index to reject a second concurrent pending fork — never a
    "check then insert" pattern, to avoid a race window. If the insert is
    rejected, return a clean "a fork is already pending" error.
-6. Backend calls IBM Granite (via watsonx) with the selected text, explicitly
-   instructing it to return ONLY the replacement text as structured output
-   (e.g. `{"alternative": "..."}`) — no preamble, no multiple options, no
-   markdown. Backend parses defensively: if the response isn't valid/expected
-   structure, or the field is missing, the fork transitions to `status=failed`
-   rather than storing garbled content.
+6. Backend calls IBM Granite (via watsonx). The prompt incorporates
+   `instruction` when present:
+   - **With instruction:** *"Rewrite the following passage so that it [instruction].
+     Return ONLY the rewritten text as JSON: `{"alternative": "..."}`."*
+   - **Without instruction (blank or omitted):** *"Write an alternative version
+     of the following passage that preserves its general tone and intent.
+     Return ONLY the rewritten text as JSON: `{"alternative": "..."}`."*
+
+   Granite must return structured output only — no preamble, no multiple
+   options, no markdown. Backend parses defensively: if the response isn't
+   valid JSON or the `alternative` field is missing/empty, the fork transitions
+   to `status=failed` rather than storing garbled content. `instruction` is
+   used only to shape this call; it is not stored on the Fork row.
 7. Document locks entirely. Frontend shows `original_snippet` vs.
    `branch_content` side-by-side for review.
 8. Writer approves or rejects:
@@ -258,7 +275,7 @@ Build this alongside P2–P3, not as an afterthought.
 | GET | `/document/:id/resolved` | Segment array of resolved document |
 | GET | `/document/:id/tree` | Flat list of all fork rows |
 | PATCH | `/document/:id/edit` | Direct edit or append within a segment |
-| POST | `/document/:id/generate-alternative` | Insert proposed fork, call Granite |
+| POST | `/document/:id/generate-alternative` | Insert proposed fork, call Granite; body: `{ segment_fork_id, anchor_start, anchor_end, selected_text, instruction?: string }` |
 | POST | `/fork/:id/approve` | Approve fork (atomic), unlock document |
 | POST | `/fork/:id/reject` | Reject fork, unlock document |
 | POST | `/fork/:id/cancel` | Cancel proposed fork, unlock document |
@@ -283,7 +300,7 @@ Build this alongside P2–P3, not as an afterthought.
 | Phase | Deliverable | Status |
 |---|---|---|
 | P1 | Single hardcoded document seeded with sample text. Live editor with ~500ms autosave debounce, editing `root_content` when no forks exist. `GET /document/:id/resolved` returns segment array. | ⬜ |
-| P2 | Segment-aware selection (cross-segment rejected). Flush debounce before fork ops. `POST /generate-alternative` with structured-output extraction, input cap, 20s timeout, `status=failed` on bad parse. Lock document, show original vs. proposed side-by-side. Session cookie issued for rate limiter. | ⬜ |
+| P2 | Segment-aware selection (cross-segment rejected). Flush debounce before fork ops. `POST /generate-alternative` with optional `instruction` field (free-form or preset chip), structured-output extraction, input cap, 20s timeout, `status=failed` on bad parse. Lock document, show original vs. proposed side-by-side. Session cookie issued for rate limiter. | ⬜ |
 | P3 | Approve (atomic `is_active`/sibling swap/`status=resolved`, immediate unlock, async `why` via `POST /fork/:id/why`). Reject. Cancel. Force-unlock. `PATCH /document/:id/edit` with coordinate-space-scoped offset shifting. Append-at-end detection. | ⬜ |
 | P4 | Tree/map view from `GET /document/:id/tree`. Clickable nodes showing `original_snippet`, `branch_content`, `why` (with "no reason recorded" + manual generate-why for `why=null`). Working switch-branch (sibling swap only, descendant state preserved). | ⬜ |
 | P5 (stretch) | Drift detection — compare new content against past resolved forks' `why` reasoning, flag a plain-language contradiction without auto-editing | ⬜ |

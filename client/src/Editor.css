@@ -59,6 +59,13 @@
   margin-bottom: 0;
 }
 
+/* Locked state — dim editor when a fork is pending review */
+.editor-shell--locked .editor-content .ProseMirror {
+  opacity: 0.55;
+  pointer-events: none;
+  user-select: none;
+}
+
 /* Subtle placeholder when empty */
 .editor-content .ProseMirror.is-editor-empty::before {
   content: 'Start writing…';
