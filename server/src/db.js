@@ -75,8 +75,16 @@ function getDb() {
 }
 
 function seedDocument(database) {
+  // INSERT ... ON CONFLICT: always upsert title, but only overwrite root_content
+  // when it is empty — so real user edits survive restarts while a stale empty
+  // seed (written before the content was finalised) gets corrected automatically.
   database
-    .prepare('INSERT OR IGNORE INTO documents (id, title, root_content) VALUES (?, ?, ?)')
+    .prepare(`
+      INSERT INTO documents (id, title, root_content) VALUES (?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        title = excluded.title,
+        root_content = CASE WHEN root_content = '' THEN excluded.root_content ELSE root_content END
+    `)
     .run(SEED_DOCUMENT_ID, SEED_TITLE, SEED_CONTENT);
 }
 
