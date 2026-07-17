@@ -2,6 +2,7 @@ import { useEffect, useState, useRef } from 'react';
 import Editor from './Editor.jsx';
 import InstructionPanel from './InstructionPanel.jsx';
 import ReviewPanel from './ReviewPanel.jsx';
+import WhyPanel from './WhyPanel.jsx';
 import './App.css';
 
 const DOC_ID = 'doc_hardcoded_001';
@@ -14,15 +15,16 @@ const DOC_ID = 'doc_hardcoded_001';
  */
 
 export default function App() {
-  const [loadError, setLoadError] = useState(null);
-  const [segments, setSegments] = useState(null);        // from /resolved
-  const [uiPhase, setUiPhase] = useState('editing');     // 'editing' | 'instruction' | 'reviewing'
-  const [selection, setSelection] = useState(null);      // current text selection info
-  const [pendingFork, setPendingFork] = useState(null);  // fork row while reviewing
+  const [loadError, setLoadError]     = useState(null);
+  const [segments, setSegments]       = useState(null);       // from /resolved
+  const [uiPhase, setUiPhase]         = useState('editing');  // 'editing' | 'instruction' | 'reviewing'
+  const [selection, setSelection]     = useState(null);       // current text selection info
+  const [pendingFork, setPendingFork] = useState(null);       // fork row while reviewing
+  const [whySuggestion, setWhySuggestion] = useState(null);  // { forkId, why } after approve
 
-  const editorRef = useRef(null); // exposes flushSave()
+  const editorRef = useRef(null); // exposes flushSave(), setContent()
 
-  // Derive initial content from segments
+  // Derive initial content from segments (used only for first mount)
   const initialContent = segments ? segments.map((s) => s.text).join('') : null;
 
   // -------------------------------------------------------------------------
@@ -38,11 +40,17 @@ export default function App() {
       .catch((err) => setLoadError(err.message));
   }, []);
 
-  // Re-fetch segments after any mutation
+  // Re-fetch segments and push new content into the live editor
   async function refreshSegments() {
     const r = await fetch(`/document/${DOC_ID}/resolved`);
-    const { segments } = await r.json();
-    setSegments(segments);
+    if (!r.ok) return;
+    const { segments: newSegments } = await r.json();
+    setSegments(newSegments);
+    // Push the resolved text into the editor so it reflects the new active path
+    if (editorRef.current) {
+      const text = newSegments.map((s) => s.text).join('');
+      editorRef.current.setContent(text);
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -51,7 +59,6 @@ export default function App() {
 
   /** Step 1: user clicks "Show alternative" button */
   async function handleShowAlternative() {
-    // Flush any pending autosave before starting a fork op
     if (editorRef.current) await editorRef.current.flushSave();
     setUiPhase('instruction');
   }
@@ -60,21 +67,52 @@ export default function App() {
   function handleForkGenerated(fork) {
     setPendingFork(fork);
     setUiPhase('reviewing');
-    // Re-fetch segments so the editor reflects the lock state (no visible change
-    // yet since fork is proposed/not-active, but good practice)
     refreshSegments();
   }
 
-  /** Step 3a: Approve — P3 will implement; for now just dismiss */
-  function handleApprove(forkId) {
-    // TODO P3: POST /fork/:id/approve, then refreshSegments + setUiPhase('editing')
-    console.log('approve', forkId, '— P3');
+  /** Step 3a: Approve */
+  async function handleApprove(forkId) {
+    const res = await fetch(`/fork/${forkId}/approve`, {
+      method: 'POST',
+      credentials: 'include',
+    });
+    if (!res.ok) {
+      const { error } = await res.json().catch(() => ({}));
+      console.error('[approve] failed:', error);
+      return;
+    }
+
+    // Unlock the editor immediately — don't wait on why generation
+    await refreshSegments();
+    setUiPhase('editing');
+    setPendingFork(null);
+    setSelection(null);
+
+    // Fire why generation in the background — non-blocking
+    fetch(`/fork/${forkId}/why`, { method: 'POST', credentials: 'include' })
+      .then((r) => r.json())
+      .then(({ fork }) => {
+        if (fork?.why) setWhySuggestion({ forkId, why: fork.why });
+      })
+      .catch((err) => console.warn('[why] async generation failed:', err.message));
   }
 
-  /** Step 3b: Reject — P3 will implement */
-  function handleReject(forkId) {
-    // TODO P3: POST /fork/:id/reject, then refreshSegments + setUiPhase('editing')
-    console.log('reject', forkId, '— P3');
+  /** Step 3b: Reject */
+  async function handleReject(forkId) {
+    const res = await fetch(`/fork/${forkId}/reject`, {
+      method: 'POST',
+      credentials: 'include',
+    });
+    if (!res.ok) {
+      const { error } = await res.json().catch(() => ({}));
+      console.error('[reject] failed:', error);
+      return;
+    }
+
+    await refreshSegments();
+    setUiPhase('editing');
+    setPendingFork(null);
+    setSelection(null);
   }
 
   function handleCancelInstruction() {
@@ -134,22 +172,25 @@ export default function App() {
         onSelectionChange={setSelection}
       />
 
-      {/* Floating "Show alternative" button — visible in editing phase when
-          the user has a valid single-segment selection */}
+      {/* Why suggestion panel — non-blocking, appears after approve completes */}
+      {whySuggestion && (
+        <WhyPanel
+          forkId={whySuggestion.forkId}
+          why={whySuggestion.why}
+          onDismiss={() => setWhySuggestion(null)}
+        />
+      )}
+
+      {/* Floating "Show alternative" button */}
       {uiPhase === 'editing' && hasValidSelection && (
         <div className="app__fork-bar">
           <button className="fork-bar__btn" onClick={handleShowAlternative}>
             Show alternative
           </button>
-          {selection.crossSegment && (
-            <span className="fork-bar__warn">
-              Selection spans multiple segments — please select within one section
-            </span>
-          )}
         </div>
       )}
 
-      {/* Cross-segment warning when selection is invalid */}
+      {/* Cross-segment warning */}
       {uiPhase === 'editing' && selection?.crossSegment && (
         <div className="app__fork-bar">
           <span className="fork-bar__warn">

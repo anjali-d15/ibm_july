@@ -260,26 +260,28 @@ const WHY_MAX_LENGTH = 2000;
  *     status = 'resolved' and is_active = 0
  * Returns 200 immediately, then fires async why-summary generation.
  */
-app.post('/document/:id/fork/:forkId/approve', (req, res) => {
+app.post('/fork/:id/approve', (req, res) => {
   const db = getDb();
-  const { id: docId, forkId } = req.params;
+  const { id: forkId } = req.params;
 
   const fork = db
     .prepare(`SELECT id, document_id, anchor_start, anchor_end, original_snippet, branch_content
-              FROM forks WHERE id = ? AND document_id = ?`)
-    .get(forkId, docId);
+              FROM forks WHERE id = ?`)
+    .get(forkId);
 
   if (!fork) return res.status(404).json({ error: 'Fork not found' });
+  const docId = fork.document_id;
 
-  // Atomic transaction: activate this fork, deactivate + resolve siblings
-  db.prepare(`BEGIN`).run();
+  // Atomic transaction: activate this fork, deactivate + resolve siblings.
+  // Explicit BEGIN/COMMIT/ROLLBACK — node:sqlite DatabaseSync has no .transaction() helper.
+  // Errors are caught at the route level and returned as 500 (never re-thrown naked).
   try {
+    db.exec('BEGIN');
     db.prepare(
       `UPDATE forks
          SET status = 'resolved', is_active = 1, updated_at = datetime('now')
        WHERE id = ?`
     ).run(forkId);
-
     db.prepare(
       `UPDATE forks
          SET is_active = 0, status = 'resolved', updated_at = datetime('now')
@@ -288,11 +290,11 @@ app.post('/document/:id/fork/:forkId/approve', (req, res) => {
          AND anchor_end   = ?
          AND id != ?`
     ).run(docId, fork.anchor_start, fork.anchor_end, forkId);
-
-    db.prepare(`COMMIT`).run();
+    db.exec('COMMIT');
   } catch (err) {
-    db.prepare(`ROLLBACK`).run();
-    throw err;
+    try { db.exec('ROLLBACK'); } catch (_) { /* already rolled back */ }
+    console.error('[approve] transaction failed:', err.message);
+    return res.status(500).json({ error: 'Failed to approve fork' });
   }
 
   res.json({ ok: true });
@@ -300,7 +302,6 @@ app.post('/document/:id/fork/:forkId/approve', (req, res) => {
   // Async why-summary — does not hold the screen lock
   draftWhySummary(fork.original_snippet, fork.branch_content)
     .then((why) => {
-      // Clamp to DB constraint just in case
       const clamped = why.slice(0, WHY_MAX_LENGTH);
       db.prepare(
         `UPDATE forks SET why = ?, updated_at = datetime('now') WHERE id = ?`
@@ -312,31 +313,87 @@ app.post('/document/:id/fork/:forkId/approve', (req, res) => {
 });
 
 /**
- * POST /document/:id/fork/:forkId/reject
+ * POST /fork/:id/reject
  *
  * Sets status = 'resolved', is_active stays 0.
  * Document unlocks; core content is unchanged.
  */
-app.post('/document/:id/fork/:forkId/reject', (req, res) => {
+app.post('/fork/:id/reject', (req, res) => {
   const db = getDb();
-  const { id: docId, forkId } = req.params;
+  const forkId = req.params.id;
 
   const result = db
     .prepare(
       `UPDATE forks
          SET status = 'resolved', updated_at = datetime('now')
-       WHERE id = ? AND document_id = ? AND status = 'proposed'`
+       WHERE id = ? AND status = 'proposed'`
     )
-    .run(forkId, docId);
+    .run(forkId);
 
   if (result.changes === 0) {
-    // Either the fork doesn't exist, belongs to a different doc, or isn't proposed
-    const fork = db.prepare(`SELECT id FROM forks WHERE id = ? AND document_id = ?`).get(forkId, docId);
+    const fork = db.prepare(`SELECT id FROM forks WHERE id = ?`).get(forkId);
     if (!fork) return res.status(404).json({ error: 'Fork not found' });
     return res.status(409).json({ error: 'Fork is not in proposed state' });
   }
 
   res.json({ ok: true });
+});
+
+/**
+ * POST /fork/:id/cancel
+ *
+ * Marks a proposed fork as failed and unlocks the document immediately.
+ * Distinct from reject: cancel applies while the fork is still proposed
+ * (Granite call may be in flight or awaiting user review before branch_content
+ * is populated). Reject applies only once branch_content exists and the fork
+ * is under review. Both result in status='failed'/'resolved' + unlock, but
+ * cancel always sets status='failed'.
+ */
+app.post('/fork/:id/cancel', (req, res) => {
+  const db = getDb();
+  const forkId = req.params.id;
+
+  const result = db
+    .prepare(
+      `UPDATE forks
+         SET status = 'failed', updated_at = datetime('now')
+       WHERE id = ? AND status = 'proposed'`
+    )
+    .run(forkId);
+
+  if (result.changes === 0) {
+    const fork = db.prepare(`SELECT id FROM forks WHERE id = ?`).get(forkId);
+    if (!fork) return res.status(404).json({ error: 'Fork not found' });
+    return res.status(409).json({ error: 'Fork is not in proposed state' });
+  }
+
+  res.json({ ok: true });
+});
+
+/**
+ * POST /document/:id/force-unlock
+ *
+ * Safety hatch: marks any pending (proposed) fork on this document as failed,
+ * unconditionally unlocking the document. No cascade, no parent state changes.
+ * Resolution walk already skips non-active forks regardless of status.
+ * No auth required — for live demo recovery only.
+ */
+app.post('/document/:id/force-unlock', (req, res) => {
+  const db = getDb();
+  const docId = req.params.id;
+
+  const doc = db.prepare('SELECT id FROM documents WHERE id = ?').get(docId);
+  if (!doc) return res.status(404).json({ error: 'Document not found' });
+
+  const result = db
+    .prepare(
+      `UPDATE forks
+         SET status = 'failed', updated_at = datetime('now')
+       WHERE document_id = ? AND status = 'proposed'`
+    )
+    .run(docId);
+
+  res.json({ ok: true, forksUnlocked: result.changes });
 });
 
 /**

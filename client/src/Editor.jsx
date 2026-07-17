@@ -72,7 +72,20 @@ const Editor = forwardRef(function Editor(
     if (pendingSaveRef.current) await pendingSaveRef.current;
   }, [persistContent]);
 
-  useImperativeHandle(ref, () => ({ flushSave }), [flushSave]);
+  /**
+   * setContent — replaces the editor's content programmatically.
+   * Called by App after approve/reject to reflect the new resolved document.
+   * Uses doc.textBetween-compatible paragraph structure, same as initial load.
+   */
+  const setContent = useCallback((text) => {
+    if (!editorRef.current) return;
+    const html = text
+      ? text.split('\n\n').map((para) => `<p>${para.replace(/\n/g, '<br>')}</p>`).join('')
+      : '';
+    editorRef.current.commands.setContent(html, /* emitUpdate= */ false);
+  }, []);
+
+  useImperativeHandle(ref, () => ({ flushSave, setContent }), [flushSave, setContent]);
 
   // ---------------------------------------------------------------------------
   // Tiptap editor
@@ -88,7 +101,13 @@ const Editor = forwardRef(function Editor(
           .map((para) => `<p>${para.replace(/\n/g, '<br>')}</p>`)
           .join('')
       : '',
-    onUpdate({ editor: ed }) {
+    onUpdate({ editor: ed, transaction }) {
+      // DEV TRACE — remove before P4
+      console.log('[onUpdate] isEditable=%s docChanged=%s steps=%d',
+        ed.isEditable, transaction.docChanged, transaction.steps.length);
+      if (!ed.isEditable) { console.log('[onUpdate] skipped — not editable'); return; }
+      if (!transaction.docChanged) { console.log('[onUpdate] skipped — no docChange'); return; }
+      console.log('[onUpdate] → scheduling save');
       // Use doc.textBetween for plain-text character offsets — per spec
       const text = ed.state.doc.textBetween(0, ed.state.doc.content.size, '\n\n', '');
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);

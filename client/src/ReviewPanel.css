@@ -66,6 +66,12 @@
   color: #1f2328;
 }
 
+.review-panel__error {
+  color: #c0392b;
+  font-size: 0.85rem;
+  margin: 0 0 0.75rem;
+}
+
 .review-panel__actions {
   display: flex;
   gap: 0.5rem;

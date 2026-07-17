@@ -7,6 +7,7 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/document': 'http://localhost:3001',
+      '/fork': 'http://localhost:3001',
     },
   },
 });

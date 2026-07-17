@@ -1,16 +1,40 @@
+import { useState } from 'react';
 import './ReviewPanel.css';
 
 /**
  * ReviewPanel — shown while a fork is pending (status=proposed).
  * Displays original_snippet vs branch_content side by side.
- * Approve/Reject wired in P3.
- *
- * Props:
- *   fork     — the fork row returned by generate-alternative
- *   onApprove(forkId) — P3 will implement; stub for now
- *   onReject(forkId)  — P3 will implement; stub for now
+ * Approve and Reject call the parent handlers and handle their own
+ * loading/error state so the buttons disable during the in-flight request.
  */
 export default function ReviewPanel({ fork, onApprove, onReject }) {
+  const [loading, setLoading] = useState(null); // 'approving' | 'rejecting' | null
+  const [error, setError]     = useState(null);
+
+  async function handleApprove() {
+    setLoading('approving');
+    setError(null);
+    try {
+      await onApprove(fork.id);
+    } catch (err) {
+      setError(err.message || 'Approve failed');
+      setLoading(null);
+    }
+  }
+
+  async function handleReject() {
+    setLoading('rejecting');
+    setError(null);
+    try {
+      await onReject(fork.id);
+    } catch (err) {
+      setError(err.message || 'Reject failed');
+      setLoading(null);
+    }
+  }
+
+  const busy = loading !== null;
+
   return (
     <div className="review-panel">
       <p className="review-panel__heading">Review alternative</p>
@@ -24,20 +48,23 @@ export default function ReviewPanel({ fork, onApprove, onReject }) {
           <div className="review-panel__text">{fork.branch_content}</div>
         </div>
       </div>
+
+      {error && <p className="review-panel__error">{error}</p>}
+
       <div className="review-panel__actions">
         <button
           className="btn btn--ghost"
-          onClick={() => onReject && onReject(fork.id)}
-          title="Reject this alternative (P3)"
+          onClick={handleReject}
+          disabled={busy}
         >
-          Reject
+          {loading === 'rejecting' ? 'Rejecting…' : 'Reject'}
         </button>
         <button
           className="btn btn--primary"
-          onClick={() => onApprove && onApprove(fork.id)}
-          title="Approve this alternative (P3)"
+          onClick={handleApprove}
+          disabled={busy}
         >
-          Approve
+          {loading === 'approving' ? 'Approving…' : 'Approve'}
         </button>
       </div>
     </div>
