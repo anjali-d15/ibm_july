@@ -7,7 +7,7 @@ const cors = require('cors');
 const crypto = require('node:crypto');
 const { getDb } = require('./db');
 const { resolveDocument } = require('./resolve');
-const { generateAlternative } = require('./granite');
+const { generateAlternative, draftWhySummary } = require('./granite');
 const { v4: uuidv4 } = require('uuid');
 
 const app = express();
@@ -243,6 +243,145 @@ app.post('/document/:id/generate-alternative', ensureSession, rateLimitMiddlewar
     ).run(forkId);
     console.error('[generate-alternative] Granite error:', err.message);
     return res.status(502).json({ error: `Generation failed: ${err.message}` });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// WHY_MAX must match the DB CHECK constraint on forks.why (length <= 2000)
+// ---------------------------------------------------------------------------
+const WHY_MAX_LENGTH = 2000;
+
+/**
+ * POST /document/:id/fork/:forkId/approve
+ *
+ * Atomically:
+ *   - Sets the fork's status = 'resolved' and is_active = 1
+ *   - Sets all sibling forks (same document + same anchor bounds) to
+ *     status = 'resolved' and is_active = 0
+ * Returns 200 immediately, then fires async why-summary generation.
+ */
+app.post('/document/:id/fork/:forkId/approve', (req, res) => {
+  const db = getDb();
+  const { id: docId, forkId } = req.params;
+
+  const fork = db
+    .prepare(`SELECT id, document_id, anchor_start, anchor_end, original_snippet, branch_content
+              FROM forks WHERE id = ? AND document_id = ?`)
+    .get(forkId, docId);
+
+  if (!fork) return res.status(404).json({ error: 'Fork not found' });
+
+  // Atomic transaction: activate this fork, deactivate + resolve siblings
+  db.prepare(`BEGIN`).run();
+  try {
+    db.prepare(
+      `UPDATE forks
+         SET status = 'resolved', is_active = 1, updated_at = datetime('now')
+       WHERE id = ?`
+    ).run(forkId);
+
+    db.prepare(
+      `UPDATE forks
+         SET is_active = 0, status = 'resolved', updated_at = datetime('now')
+       WHERE document_id = ?
+         AND anchor_start = ?
+         AND anchor_end   = ?
+         AND id != ?`
+    ).run(docId, fork.anchor_start, fork.anchor_end, forkId);
+
+    db.prepare(`COMMIT`).run();
+  } catch (err) {
+    db.prepare(`ROLLBACK`).run();
+    throw err;
+  }
+
+  res.json({ ok: true });
+
+  // Async why-summary — does not hold the screen lock
+  draftWhySummary(fork.original_snippet, fork.branch_content)
+    .then((why) => {
+      // Clamp to DB constraint just in case
+      const clamped = why.slice(0, WHY_MAX_LENGTH);
+      db.prepare(
+        `UPDATE forks SET why = ?, updated_at = datetime('now') WHERE id = ?`
+      ).run(clamped, forkId);
+    })
+    .catch((err) => {
+      console.error('[approve] async why-summary failed (why left null):', err.message);
+    });
+});
+
+/**
+ * POST /document/:id/fork/:forkId/reject
+ *
+ * Sets status = 'resolved', is_active stays 0.
+ * Document unlocks; core content is unchanged.
+ */
+app.post('/document/:id/fork/:forkId/reject', (req, res) => {
+  const db = getDb();
+  const { id: docId, forkId } = req.params;
+
+  const result = db
+    .prepare(
+      `UPDATE forks
+         SET status = 'resolved', updated_at = datetime('now')
+       WHERE id = ? AND document_id = ? AND status = 'proposed'`
+    )
+    .run(forkId, docId);
+
+  if (result.changes === 0) {
+    // Either the fork doesn't exist, belongs to a different doc, or isn't proposed
+    const fork = db.prepare(`SELECT id FROM forks WHERE id = ? AND document_id = ?`).get(forkId, docId);
+    if (!fork) return res.status(404).json({ error: 'Fork not found' });
+    return res.status(409).json({ error: 'Fork is not in proposed state' });
+  }
+
+  res.json({ ok: true });
+});
+
+/**
+ * POST /fork/:id/why
+ *
+ * Idempotent: generate (or regenerate) the why field for any resolved fork.
+ * Body (optional): { why: string } — if provided, directly sets the why text
+ * without calling Granite (manual override / confirmation).
+ * Hard length cap: WHY_MAX_LENGTH characters.
+ */
+app.post('/fork/:id/why', async (req, res) => {
+  const db = getDb();
+  const forkId = req.params.id;
+
+  const fork = db
+    .prepare(`SELECT id, original_snippet, branch_content, why FROM forks WHERE id = ?`)
+    .get(forkId);
+
+  if (!fork) return res.status(404).json({ error: 'Fork not found' });
+
+  // Manual override path: caller supplies the text directly
+  if (req.body && typeof req.body.why === 'string') {
+    const manualWhy = req.body.why.trim();
+    if (manualWhy.length > WHY_MAX_LENGTH) {
+      return res.status(400).json({ error: `why must be ${WHY_MAX_LENGTH} characters or fewer` });
+    }
+    db.prepare(
+      `UPDATE forks SET why = ?, updated_at = datetime('now') WHERE id = ?`
+    ).run(manualWhy || null, forkId);
+    const updated = db.prepare(`SELECT id, why FROM forks WHERE id = ?`).get(forkId);
+    return res.json({ fork: updated });
+  }
+
+  // AI-generation path
+  try {
+    const why = await draftWhySummary(fork.original_snippet, fork.branch_content);
+    const clamped = why.slice(0, WHY_MAX_LENGTH);
+    db.prepare(
+      `UPDATE forks SET why = ?, updated_at = datetime('now') WHERE id = ?`
+    ).run(clamped, forkId);
+    const updated = db.prepare(`SELECT id, why FROM forks WHERE id = ?`).get(forkId);
+    return res.json({ fork: updated });
+  } catch (err) {
+    console.error('[why] Granite error:', err.message);
+    return res.status(502).json({ error: `Why generation failed: ${err.message}` });
   }
 });
 
