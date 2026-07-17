@@ -292,8 +292,8 @@ Build this alongside P2–P3, not as an afterthought.
 - No multi-user collaboration, no auth beyond the force-unlock safety hatch —
   single-session, single-document demo is fine.
 - No persistence requirements beyond SQLite surviving a dev session.
-- Drift detection is a stretch goal only — not built until P1–P4 are fully
-  working.
+- The consistency checker (P5) is a stretch goal only — not built until P1–P4
+  are fully working and verified.
 
 ## Phased Delivery
 
@@ -303,6 +303,111 @@ Build this alongside P2–P3, not as an afterthought.
 | P2 | Segment-aware selection (cross-segment rejected). Flush debounce before fork ops. `POST /generate-alternative` with optional `instruction` field (free-form or preset chip), structured-output extraction, input cap, 20s timeout, `status=failed` on bad parse. Lock document, show original vs. proposed side-by-side. Session cookie issued for rate limiter. | ⬜ |
 | P3 | Approve (atomic `is_active`/sibling swap/`status=resolved`, immediate unlock, async `why` via `POST /fork/:id/why`). Reject. Cancel. Force-unlock. `PATCH /document/:id/edit` with coordinate-space-scoped offset shifting. Append-at-end detection. | ⬜ |
 | P4 | Tree/map view from `GET /document/:id/tree`. Clickable nodes showing `original_snippet`, `branch_content`, `why` (with "no reason recorded" + manual generate-why for `why=null`). Working switch-branch (sibling swap only, descendant state preserved). | ⬜ |
-| P5 (stretch) | Drift detection — compare new content against past resolved forks' `why` reasoning, flag a plain-language contradiction without auto-editing | ⬜ |
+| P5 (stretch) | Plot/intent consistency checker — see full spec below. | ⬜ |
 
 Build and verify each phase before moving to the next.
+
+---
+
+## P5 — Plot/Intent Consistency Checker (Stretch)
+
+> Not built until P1–P4 are fully verified. All design decisions below are final and locked before any implementation begins.
+
+### Concept
+
+On demand, the user triggers a check that compares the active-path `why` records against the current resolved document. Granite identifies passages that appear to contradict a documented decision intent and asks the user a clarifying question for each. The user's answer — a required binary choice plus an optional note — is stored permanently on the fork row it was asked about. Nothing is auto-edited.
+
+### Schema Addition
+
+Add two columns to the `forks` table:
+
+| Field | Type | Notes |
+|---|---|---|
+| `consistency_verdict` | `TEXT` nullable | `'intentional'` \| `'flagged'` \| `null` — null means no check has been run against this fork yet |
+| `consistency_note` | `TEXT` nullable | Optional free-form elaboration from the user; hard cap 2000 chars |
+
+`consistency_verdict` is an enum stored as TEXT (consistent with `status`). A fork with `consistency_verdict=null` simply has not been interrogated yet — this is the normal state for all existing forks and requires no migration logic beyond `ALTER TABLE`.
+
+A `'flagged'` verdict is itself a meaningful preserved decision, visible in the tree view alongside `why`. A `'intentional'` verdict confirms the writer was aware of the apparent contradiction and chose it deliberately.
+
+### Trigger
+
+- User-initiated only via a **"Check consistency"** button in the editor UI.
+- Button is disabled whenever `status='proposed'` exists on the document (same gate as all fork operations).
+- The check has no lock of its own — it reads `/resolved` for the current document text and writes only `consistency_verdict`/`consistency_note` back to fork rows. It does not create a Fork row and does not set the document lock.
+
+### What Gets Compared
+
+- **Input to Granite:** all active-path forks (`is_active=1`, `status='resolved'`) whose `why` is non-null, plus the full resolved document text.
+- Forks with `why=null` are skipped — no documented intent to drift from.
+- Rejected forks (`is_active=0`) are excluded — their `why` describes a path not taken.
+- **Prompt-level scoping:** the prompt instructs Granite to only flag contradictions in content that would chronologically follow a given decision, not content that predates it. This is a prompt-level mitigation, not a structural guarantee — acceptable for this build.
+- **Prompt-level scoping note:** this is not offset-based. Granite receives the decision list ordered by `created_at ASC` and is instructed to treat earlier entries as prior context and later entries/document text as potentially contradictory. False positives are possible but acceptable at this scope.
+
+### Granite Call
+
+Single call to `POST /document/:id/check-consistency`. Returns a structured array:
+
+```json
+[
+  { "fork_id": "...", "question": "In an earlier decision you noted [why]. This section seems to contradict that — is this intentional, or should it be flagged?" },
+  ...
+]
+```
+
+Empty array = no contradictions found. Granite must return valid JSON; on bad parse, the check fails cleanly with an error — no partial results stored, no fork rows mutated.
+
+- 20s server-side timeout, same pattern as alternative generation.
+- Dev-only response cache keyed on `hash(resolved_text + concatenated_why_fields)`.
+- The check result array is returned to the frontend and stepped through entirely client-side — no per-question round-trips to Granite.
+
+### UI Flow
+
+1. User clicks **"Check consistency"**. Button shows loading state.
+2. Backend returns `{ findings: [{fork_id, question}, ...] }`.
+3. **If `findings` is empty:** show "No contradictions found" panel with a close button. No data written. User closes it manually.
+4. **If `findings` is non-empty:** UI steps through them one at a time, showing:
+   - The fork's `original_snippet`, `branch_content`, and `why` for context
+   - Granite's clarifying question
+   - Two required action buttons: **"Intentional"** and **"Flag it"**
+   - An optional free-form text input for a note (max 2000 chars, same cap as `selected_text`)
+5. On each answer, `PATCH /fork/:id/consistency` writes `consistency_verdict` and `consistency_note` to that fork row immediately — not batched at the end.
+6. After the last question is answered, the panel closes and the tree view re-fetches to reflect the updated verdicts.
+
+### Storage
+
+**`PATCH /fork/:id/consistency`**
+
+```
+Body: { verdict: 'intentional' | 'flagged', note?: string }
+```
+
+- Validates `verdict` is one of the two allowed values
+- Validates `note` length ≤ 2000 chars if present
+- Only writes when `consistency_verdict IS NULL` on the target fork — never overwrites an existing verdict. An already-answered fork is skipped silently; changing a verdict requires a future explicit action, not a re-run side effect. This matches the pattern used everywhere else: existing recorded decisions only change via deliberate user action.
+- Before writing, checks that no fork on the document has `status='proposed'` — if one exists, returns 409 and does not write. Cheap defensive insurance against the theoretical concurrent-fork window; not expected to matter in single-session scope.
+- Does not touch `status`, `is_active`, or any other fork field
+
+### Tree View Integration (P4 extension)
+
+The P4 tree view already renders per-fork data. When P5 is built:
+- Forks with `consistency_verdict='flagged'` display a visual flag indicator
+- Forks with `consistency_verdict='intentional'` display a subtle "confirmed intentional" indicator
+- Forks with `consistency_verdict=null` display nothing (normal state)
+- `consistency_note` is shown inline when present, below `why`
+
+### API Addition
+
+| Method | Path | Purpose |
+|---|---|---|
+| POST | `/document/:id/check-consistency` | Run consistency check; returns `{ findings: [{fork_id, question}] }` |
+| PATCH | `/fork/:id/consistency` | Store verdict + optional note for one finding |
+
+### What P5 Does Not Do
+
+- Does not auto-edit anything
+- Does not create Fork rows
+- Does not lock the document
+- Does not run automatically or on a timer
+- Does not check rejected forks or forks with `why=null`
+- Does not re-ask questions about forks that already have a `consistency_verdict` — on re-runs, only `consistency_verdict IS NULL` forks are interrogated. Existing verdicts are displayed in the tree view and only change via future explicit user action.
