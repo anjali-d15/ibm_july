@@ -3,6 +3,53 @@
   min-height: 100vh;
 }
 
+/* ---- View toggle (Editor / Decision tree) ---- */
+.app__view-toggle {
+  position: fixed;
+  top: 0.7rem;
+  right: 1.25rem;
+  z-index: 50;
+  display: flex;
+  gap: 0;
+  background: #f7f8fa;
+  border: 1px solid #d0d7de;
+  border-radius: 5px;
+  overflow: hidden;
+}
+
+.view-tab {
+  background: transparent;
+  border: none;
+  padding: 0.3rem 0.9rem;
+  font-size: 0.82rem;
+  font-family: inherit;
+  color: #57606a;
+  cursor: pointer;
+  white-space: nowrap;
+  line-height: 1.5;
+  border-right: 1px solid #d0d7de;
+}
+
+.view-tab:last-child {
+  border-right: none;
+}
+
+.view-tab:hover:not(:disabled) {
+  background: #eef1f6;
+  color: #1f2328;
+}
+
+.view-tab--active {
+  background: #ffffff;
+  color: #1f2328;
+  font-weight: 600;
+}
+
+.view-tab:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 /* Overlay panels (instruction / review) sit above the editor */
 .app__overlay-panel {
   position: sticky;

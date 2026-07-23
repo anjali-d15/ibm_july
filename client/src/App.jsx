@@ -3,6 +3,7 @@ import Editor from './Editor.jsx';
 import InstructionPanel from './InstructionPanel.jsx';
 import ReviewPanel from './ReviewPanel.jsx';
 import WhyPanel from './WhyPanel.jsx';
+import TreeView from './TreeView.jsx';
 import './App.css';
 
 const DOC_ID = 'doc_hardcoded_001';
@@ -12,12 +13,17 @@ const DOC_ID = 'doc_hardcoded_001';
  *   'editing'     — normal editor, user can select and click "Show alternative"
  *   'instruction' — InstructionPanel visible, editor still readable
  *   'reviewing'   — ReviewPanel visible, editor locked (fork is proposed)
+ *
+ * Views:
+ *   'editor' — the Tiptap editor (default)
+ *   'tree'   — the decision-tree view
  */
 
 export default function App() {
   const [loadError, setLoadError]     = useState(null);
   const [segments, setSegments]       = useState(null);       // from /resolved
   const [uiPhase, setUiPhase]         = useState('editing');  // 'editing' | 'instruction' | 'reviewing'
+  const [activeView, setActiveView]   = useState('editor');   // 'editor' | 'tree'
   const [selection, setSelection]     = useState(null);       // current text selection info
   const [pendingFork, setPendingFork] = useState(null);       // fork row while reviewing
   const [whySuggestion, setWhySuggestion] = useState(null);  // { forkId, why } after approve
@@ -120,6 +126,16 @@ export default function App() {
     setSelection(null);
   }
 
+  /**
+   * handleBranchSwitch — called by TreeView after a successful /fork/:id/switch.
+   * Re-fetches /resolved so the editor content updates to the new active path.
+   */
+  async function handleBranchSwitch() {
+    await refreshSegments();
+    // Switch back to editor so the writer sees the effect immediately
+    setActiveView('editor');
+  }
+
   // -------------------------------------------------------------------------
   // Render
   // -------------------------------------------------------------------------
@@ -140,63 +156,104 @@ export default function App() {
 
   return (
     <div className="app">
-      {/* Instruction panel — shown above editor before generation */}
-      {uiPhase === 'instruction' && (
-        <div className="app__overlay-panel">
-          <InstructionPanel
+      {/* ------------------------------------------------------------------ */}
+      {/* View toggle — top-right corner tab pair                             */}
+      {/* ------------------------------------------------------------------ */}
+      <div className="app__view-toggle" role="tablist" aria-label="Switch view">
+        <button
+          role="tab"
+          aria-selected={activeView === 'editor'}
+          className={`view-tab${activeView === 'editor' ? ' view-tab--active' : ''}`}
+          onClick={() => setActiveView('editor')}
+        >
+          Editor
+        </button>
+        <button
+          role="tab"
+          aria-selected={activeView === 'tree'}
+          className={`view-tab${activeView === 'tree' ? ' view-tab--active' : ''}`}
+          onClick={() => setActiveView('tree')}
+          disabled={isLocked}
+          title={isLocked ? 'Tree unavailable while a fork is pending' : undefined}
+        >
+          Decision tree
+        </button>
+      </div>
+
+      {/* ------------------------------------------------------------------ */}
+      {/* EDITOR VIEW                                                         */}
+      {/* ------------------------------------------------------------------ */}
+      {activeView === 'editor' && (
+        <>
+          {/* Instruction panel — shown above editor before generation */}
+          {uiPhase === 'instruction' && (
+            <div className="app__overlay-panel">
+              <InstructionPanel
+                docId={DOC_ID}
+                selection={selection}
+                onSubmit={handleForkGenerated}
+                onCancel={handleCancelInstruction}
+              />
+            </div>
+          )}
+
+          {/* Review panel — shown while fork is proposed */}
+          {uiPhase === 'reviewing' && pendingFork && (
+            <div className="app__overlay-panel">
+              <ReviewPanel
+                fork={pendingFork}
+                onApprove={handleApprove}
+                onReject={handleReject}
+              />
+            </div>
+          )}
+
+          <Editor
+            ref={editorRef}
             docId={DOC_ID}
-            selection={selection}
-            onSubmit={handleForkGenerated}
-            onCancel={handleCancelInstruction}
+            initialContent={initialContent}
+            segments={segments}
+            locked={isLocked}
+            onSelectionChange={setSelection}
           />
-        </div>
+
+          {/* Why suggestion panel — non-blocking, appears after approve */}
+          {whySuggestion && (
+            <WhyPanel
+              forkId={whySuggestion.forkId}
+              why={whySuggestion.why}
+              onDismiss={() => setWhySuggestion(null)}
+            />
+          )}
+
+          {/* Floating "Show alternative" button */}
+          {uiPhase === 'editing' && hasValidSelection && (
+            <div className="app__fork-bar">
+              <button className="fork-bar__btn" onClick={handleShowAlternative}>
+                Show alternative
+              </button>
+            </div>
+          )}
+
+          {/* Cross-segment warning */}
+          {uiPhase === 'editing' && selection?.crossSegment && (
+            <div className="app__fork-bar">
+              <span className="fork-bar__warn">
+                Selection spans multiple segments — please select within one section
+              </span>
+            </div>
+          )}
+        </>
       )}
 
-      {/* Review panel — shown while fork is proposed */}
-      {uiPhase === 'reviewing' && pendingFork && (
-        <div className="app__overlay-panel">
-          <ReviewPanel
-            fork={pendingFork}
-            onApprove={handleApprove}
-            onReject={handleReject}
-          />
-        </div>
-      )}
-
-      <Editor
-        ref={editorRef}
-        docId={DOC_ID}
-        initialContent={initialContent}
-        segments={segments}
-        locked={isLocked}
-        onSelectionChange={setSelection}
-      />
-
-      {/* Why suggestion panel — non-blocking, appears after approve completes */}
-      {whySuggestion && (
-        <WhyPanel
-          forkId={whySuggestion.forkId}
-          why={whySuggestion.why}
-          onDismiss={() => setWhySuggestion(null)}
+      {/* ------------------------------------------------------------------ */}
+      {/* TREE VIEW                                                           */}
+      {/* ------------------------------------------------------------------ */}
+      {activeView === 'tree' && (
+        <TreeView
+          docId={DOC_ID}
+          onSwitch={handleBranchSwitch}
         />
-      )}
-
-      {/* Floating "Show alternative" button */}
-      {uiPhase === 'editing' && hasValidSelection && (
-        <div className="app__fork-bar">
-          <button className="fork-bar__btn" onClick={handleShowAlternative}>
-            Show alternative
-          </button>
-        </div>
-      )}
-
-      {/* Cross-segment warning */}
-      {uiPhase === 'editing' && selection?.crossSegment && (
-        <div className="app__fork-bar">
-          <span className="fork-bar__warn">
-            Selection spans multiple segments — please select within one section
-          </span>
-        </div>
       )}
     </div>
   );

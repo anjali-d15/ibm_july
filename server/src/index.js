@@ -397,6 +397,63 @@ app.post('/document/:id/force-unlock', (req, res) => {
 });
 
 /**
+ * POST /fork/:id/switch
+ *
+ * Switch active branch at this fork's level:
+ *   - Sets is_active=1 on this fork (must be status='resolved')
+ *   - Sets is_active=0 on all sibling forks at the same (document, anchor) point
+ *   - Descendant is_active values are preserved — this is intentional, they
+ *     represent remembered decisions on that branch
+ *
+ * Does not change any fork's status.
+ * Returns 409 if the document has a pending fork (document is locked).
+ */
+app.post('/fork/:id/switch', (req, res) => {
+  const db = getDb();
+  const forkId = req.params.id;
+
+  const fork = db
+    .prepare(`SELECT id, document_id, anchor_start, anchor_end, status FROM forks WHERE id = ?`)
+    .get(forkId);
+
+  if (!fork) return res.status(404).json({ error: 'Fork not found' });
+  if (fork.status !== 'resolved') {
+    return res.status(409).json({ error: 'Only resolved forks can be switched to' });
+  }
+
+  // Block while a fork is pending
+  const pending = db
+    .prepare(`SELECT id FROM forks WHERE document_id = ? AND status = 'proposed' LIMIT 1`)
+    .get(fork.document_id);
+  if (pending) {
+    return res.status(409).json({ error: 'Document is locked: a fork is pending review' });
+  }
+
+  // Sibling swap — only at this anchor point, only is_active changes
+  try {
+    db.exec('BEGIN');
+    db.prepare(
+      `UPDATE forks SET is_active = 1, updated_at = datetime('now') WHERE id = ?`
+    ).run(forkId);
+    db.prepare(
+      `UPDATE forks
+         SET is_active = 0, updated_at = datetime('now')
+       WHERE document_id = ?
+         AND anchor_start = ?
+         AND anchor_end   = ?
+         AND id != ?`
+    ).run(fork.document_id, fork.anchor_start, fork.anchor_end, forkId);
+    db.exec('COMMIT');
+  } catch (err) {
+    try { db.exec('ROLLBACK'); } catch (_) { /* already rolled back */ }
+    console.error('[switch] transaction failed:', err.message);
+    return res.status(500).json({ error: 'Failed to switch branch' });
+  }
+
+  res.json({ ok: true });
+});
+
+/**
  * POST /fork/:id/why
  *
  * Idempotent: generate (or regenerate) the why field for any resolved fork.

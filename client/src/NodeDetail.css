@@ -1,0 +1,161 @@
+/* ============================================================
+   NodeDetail — inline fork detail panel
+   ============================================================ */
+
+.node-detail {
+  background: #ffffff;
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+  overflow: hidden;
+  font-size: 0.88rem;
+}
+
+/* ---- Status strip ---- */
+.node-detail__status-strip {
+  padding: 0.35rem 0.85rem;
+  font-size: 0.73rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+}
+
+.node-detail__status-strip--active   { background: #cdf0d9; color: #116329; }
+.node-detail__status-strip--inactive { background: #f0f1f3; color: #57606a; }
+.node-detail__status-strip--pending  { background: #fde68a; color: #7a5800; }
+.node-detail__status-strip--failed   { background: #ffe0e2; color: #8b1d1d; }
+
+.node-detail__active-mark {
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+/* ---- Side-by-side columns ---- */
+.node-detail__columns {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.node-detail__col {
+  padding: 0.75rem 0.85rem;
+}
+
+.node-detail__col:first-child {
+  border-right: 1px solid #e5e7eb;
+}
+
+.node-detail__col-label {
+  display: block;
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: #57606a;
+  margin-bottom: 0.35rem;
+}
+
+.node-detail__text {
+  color: #1f2328;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.node-detail__empty {
+  color: #adb5bd;
+  font-style: italic;
+}
+
+/* ---- Why section ---- */
+.node-detail__why {
+  padding: 0.75rem 0.85rem;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.node-detail__why-label {
+  display: block;
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: #57606a;
+  margin-bottom: 0.35rem;
+}
+
+.node-detail__why-text {
+  color: #1f2328;
+  line-height: 1.55;
+  margin: 0;
+}
+
+.node-detail__why-empty {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.node-detail__why-none {
+  color: #adb5bd;
+  font-style: italic;
+}
+
+.node-detail__why-error {
+  color: #c0392b;
+  font-size: 0.8rem;
+}
+
+/* ---- Actions ---- */
+.node-detail__actions {
+  padding: 0.65rem 0.85rem;
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* ---- Shared button base (mirrors existing .btn classes) ---- */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  padding: 0.4rem 1rem;
+  font-size: 0.88rem;
+  font-family: inherit;
+  cursor: pointer;
+  border: 1px solid transparent;
+  white-space: nowrap;
+  line-height: 1.4;
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn--primary {
+  background: #3b82d4;
+  color: #ffffff;
+  border-color: #3b82d4;
+}
+
+.btn--primary:hover:not(:disabled) {
+  background: #2563b0;
+  border-color: #2563b0;
+}
+
+.btn--ghost {
+  background: transparent;
+  color: #1f2328;
+  border-color: #d0d7de;
+}
+
+.btn--ghost:hover:not(:disabled) {
+  background: #f3f4f6;
+}
+
+.btn--sm {
+  padding: 0.2rem 0.65rem;
+  font-size: 0.78rem;
+}

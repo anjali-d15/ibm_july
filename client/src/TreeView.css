@@ -1,0 +1,171 @@
+/* ============================================================
+   TreeView — decision-tree visualisation
+   ============================================================ */
+
+.tree-view {
+  padding: 2rem 1.5rem;
+  max-width: 860px;
+  margin: 0 auto;
+  font-size: 0.92rem;
+  line-height: 1.5;
+  color: #1f2328;
+}
+
+.tree-view--loading,
+.tree-view--empty,
+.tree-view--error {
+  color: #57606a;
+  padding: 3rem 1.5rem;
+  text-align: center;
+}
+
+.tree-view--error { color: #c0392b; }
+
+/* ---- Legend ---- */
+.tree-view__legend {
+  display: flex;
+  align-items: center;
+  gap: 1.25rem;
+  margin-bottom: 1.75rem;
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid #e5e7eb;
+  flex-wrap: wrap;
+}
+
+.legend-item {
+  font-size: 0.78rem;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  color: #57606a;
+}
+
+.legend-item::before {
+  content: '';
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.legend-item--active::before  { background: #2da44e; }
+.legend-item--inactive::before { background: #adb5bd; }
+.legend-item--failed::before  { background: #d1242f; }
+.legend-item--pending::before { background: #d29922; }
+
+/* ---- Node groups (wraps the node row + children) ---- */
+.tree-node-group {
+  position: relative;
+}
+
+/* ---- Indent children ---- */
+.tree-children {
+  border-left: 2px solid #e5e7eb;
+  margin-left: 1.2rem;
+  padding-left: 0;
+}
+
+/* ---- Node row ---- */
+.tree-node {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.5rem 0.75rem;
+  margin: 0.25rem 0;
+  border-radius: 5px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  background: #f7f8fa;
+  transition: background 0.1s, border-color 0.1s;
+  user-select: none;
+}
+
+.tree-node:hover {
+  background: #eef1f6;
+  border-color: #d0d7de;
+}
+
+.tree-node--selected {
+  border-color: #3b82d4 !important;
+  background: #eff5ff !important;
+}
+
+/* Active-path: bold, saturated green accent */
+.tree-node--active {
+  background: #e6f6ec;
+  border-color: #9be9b8;
+}
+
+.tree-node--active .tree-node__snippet {
+  font-weight: 600;
+  color: #116329;
+}
+
+/* Inactive (rejected): lightened, grayed — still fully clickable */
+.tree-node--inactive {
+  background: #f7f8fa;
+  opacity: 0.72;
+}
+
+.tree-node--inactive .tree-node__snippet {
+  color: #57606a;
+}
+
+/* Failed */
+.tree-node--failed {
+  opacity: 0.6;
+}
+
+.tree-node--failed .tree-node__snippet {
+  color: #8b1d1d;
+  text-decoration: line-through;
+}
+
+/* Pending */
+.tree-node--pending {
+  background: #fff8e4;
+  border-color: #f0c832;
+}
+
+.tree-node--pending .tree-node__snippet {
+  color: #7a5800;
+}
+
+/* ---- Connector line ---- */
+.tree-node__connector {
+  display: none; /* handled by left-border on .tree-children */
+}
+
+/* ---- Status badge ---- */
+.tree-node__badge--status {
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 0.1rem 0.45rem;
+  border-radius: 3px;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.tree-node--active  .tree-node__badge--status { background: #cdf0d9; color: #116329; }
+.tree-node--inactive .tree-node__badge--status { background: #e5e7eb; color: #57606a; }
+.tree-node--failed  .tree-node__badge--status { background: #ffe0e2; color: #8b1d1d; }
+.tree-node--pending .tree-node__badge--status { background: #fde68a; color: #7a5800; }
+
+/* ---- Snippet text ---- */
+.tree-node__snippet {
+  font-size: 0.88rem;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  flex: 1;
+  min-width: 0;
+}
+
+/* ---- Detail panel wrapper ---- */
+.tree-node__detail-wrapper {
+  margin: 0 0 0.5rem 0;
+  margin-left: 0.75rem;
+}
