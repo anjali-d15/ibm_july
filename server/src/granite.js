@@ -235,4 +235,91 @@ async function draftWhySummary(originalSnippet, branchContent) {
   return result;
 }
 
-module.exports = { generateAlternative, buildPrompt, draftWhySummary, buildWhyPrompt };
+// ---------------------------------------------------------------------------
+// P5 — Consistency checker
+// ---------------------------------------------------------------------------
+
+const CONSISTENCY_SYSTEM = [
+  'You are a precise editorial assistant.',
+  'You always respond with valid JSON only — no prose, no markdown, no explanation outside the JSON.',
+  'Your response must be a single JSON object with exactly this key: "findings".',
+  'The value of "findings" is an array (possibly empty) of objects each with "fork_id" (string) and "question" (string).',
+].join(' ');
+
+/**
+ * Build the prompt for the consistency check.
+ * @param {string} resolvedText  — the full resolved document text
+ * @param {{ id: string, why: string }[]} decisions — active-path forks with non-null why, ordered by created_at ASC
+ * @returns {string}
+ */
+function buildConsistencyPrompt(resolvedText, decisions) {
+  const decisionList = decisions
+    .map((d, i) => `Decision ${i + 1} (fork_id: "${d.id}"):\n  Why: ${d.why}`)
+    .join('\n\n');
+
+  return (
+    `Your response must be a JSON object with exactly this structure:\n` +
+    `{"findings": [{"fork_id": "...", "question": "..."}, ...]}\n\n` +
+    `An empty array means no contradictions were found.\n\n` +
+    `You are reviewing a document alongside the author's recorded decisions.\n` +
+    `For each decision, check whether the current document text contradicts the stated intent.\n` +
+    `Only flag contradictions in content that follows the decision chronologically.\n` +
+    `For each contradiction found, include the fork_id and a concise clarifying question.\n\n` +
+    `Recorded decisions (ordered oldest first):\n${decisionList}\n\n` +
+    `Current document:\n${resolvedText}`
+  );
+}
+
+/**
+ * Run the plot/intent consistency check.
+ * @param {string} resolvedText
+ * @param {{ id: string, why: string }[]} decisions
+ * @returns {Promise<{ fork_id: string, question: string }[]>}
+ * @throws if the Granite call fails or the response can't be parsed
+ */
+async function checkConsistency(resolvedText, decisions) {
+  const userMessage = buildConsistencyPrompt(resolvedText, decisions);
+  const cacheKey = userMessage;
+
+  const cached = devCacheGet(cacheKey);
+  if (cached !== undefined) {
+    console.log('[granite] consistency cache hit');
+    return cached;
+  }
+
+  const rawText = await callChat(
+    [
+      { role: 'system', content: CONSISTENCY_SYSTEM },
+      { role: 'user', content: userMessage },
+    ],
+    600
+  );
+
+  let parsed;
+  try {
+    parsed = JSON.parse(rawText.trim());
+  } catch {
+    throw new Error(`Granite consistency response is not valid JSON: ${rawText.slice(0, 200)}`);
+  }
+
+  if (!Array.isArray(parsed.findings)) {
+    throw new Error(`Granite consistency response missing "findings" array: ${rawText.slice(0, 200)}`);
+  }
+
+  // Validate each finding has fork_id and question strings
+  const findings = parsed.findings.filter(
+    (f) => typeof f.fork_id === 'string' && typeof f.question === 'string'
+  );
+
+  devCacheSet(cacheKey, findings);
+  return findings;
+}
+
+module.exports = {
+  generateAlternative,
+  buildPrompt,
+  draftWhySummary,
+  buildWhyPrompt,
+  checkConsistency,
+  buildConsistencyPrompt,
+};

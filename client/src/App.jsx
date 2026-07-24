@@ -4,6 +4,7 @@ import InstructionPanel from './InstructionPanel.jsx';
 import ReviewPanel from './ReviewPanel.jsx';
 import WhyPanel from './WhyPanel.jsx';
 import TreeView from './TreeView.jsx';
+import ConsistencyPanel from './ConsistencyPanel.jsx';
 import './App.css';
 
 const DOC_ID = 'doc_hardcoded_001';
@@ -20,13 +21,15 @@ const DOC_ID = 'doc_hardcoded_001';
  */
 
 export default function App() {
-  const [loadError, setLoadError]     = useState(null);
-  const [segments, setSegments]       = useState(null);       // from /resolved
-  const [uiPhase, setUiPhase]         = useState('editing');  // 'editing' | 'instruction' | 'reviewing'
-  const [activeView, setActiveView]   = useState('editor');   // 'editor' | 'tree'
-  const [selection, setSelection]     = useState(null);       // current text selection info
-  const [pendingFork, setPendingFork] = useState(null);       // fork row while reviewing
-  const [whySuggestion, setWhySuggestion] = useState(null);  // { forkId, why } after approve
+  const [loadError, setLoadError]             = useState(null);
+  const [segments, setSegments]               = useState(null);       // from /resolved
+  const [uiPhase, setUiPhase]                 = useState('editing');  // 'editing' | 'instruction' | 'reviewing'
+  const [activeView, setActiveView]           = useState('editor');   // 'editor' | 'tree'
+  const [selection, setSelection]             = useState(null);       // current text selection info
+  const [pendingFork, setPendingFork]         = useState(null);       // fork row while reviewing
+  const [whySuggestion, setWhySuggestion]     = useState(null);       // { forkId, why } after approve
+  const [globalError, setGlobalError]         = useState(null);       // banner for top-level API errors
+  const [showConsistency, setShowConsistency] = useState(false);      // P5 consistency panel
 
   const editorRef = useRef(null); // exposes flushSave(), setContent()
 
@@ -46,10 +49,14 @@ export default function App() {
       .catch((err) => setLoadError(err.message));
   }, []);
 
-  // Re-fetch segments and push new content into the live editor
+  // Re-fetch segments and push new content into the live editor.
+  // On failure, sets the global error banner instead of silently dropping the error.
   async function refreshSegments() {
     const r = await fetch(`/document/${DOC_ID}/resolved`);
-    if (!r.ok) return;
+    if (!r.ok) {
+      const text = await r.text().catch(() => '');
+      throw new Error(`Failed to reload document (${r.status}): ${text}`);
+    }
     const { segments: newSegments } = await r.json();
     setSegments(newSegments);
     // Push the resolved text into the editor so it reflects the new active path
@@ -73,23 +80,29 @@ export default function App() {
   function handleForkGenerated(fork) {
     setPendingFork(fork);
     setUiPhase('reviewing');
-    refreshSegments();
+    refreshSegments().catch((err) => setGlobalError(err.message));
   }
 
-  /** Step 3a: Approve */
+  /**
+   * Step 3a: Approve
+   * Throws on failure so ReviewPanel can catch it and show an error banner.
+   */
   async function handleApprove(forkId) {
     const res = await fetch(`/fork/${forkId}/approve`, {
       method: 'POST',
       credentials: 'include',
     });
     if (!res.ok) {
-      const { error } = await res.json().catch(() => ({}));
-      console.error('[approve] failed:', error);
-      return;
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.error || `Approve failed (${res.status})`);
     }
 
     // Unlock the editor immediately — don't wait on why generation
-    await refreshSegments();
+    try {
+      await refreshSegments();
+    } catch (err) {
+      setGlobalError(err.message);
+    }
     setUiPhase('editing');
     setPendingFork(null);
     setSelection(null);
@@ -103,19 +116,25 @@ export default function App() {
       .catch((err) => console.warn('[why] async generation failed:', err.message));
   }
 
-  /** Step 3b: Reject */
+  /**
+   * Step 3b: Reject
+   * Throws on failure so ReviewPanel can catch it and show an error banner.
+   */
   async function handleReject(forkId) {
     const res = await fetch(`/fork/${forkId}/reject`, {
       method: 'POST',
       credentials: 'include',
     });
     if (!res.ok) {
-      const { error } = await res.json().catch(() => ({}));
-      console.error('[reject] failed:', error);
-      return;
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.error || `Reject failed (${res.status})`);
     }
 
-    await refreshSegments();
+    try {
+      await refreshSegments();
+    } catch (err) {
+      setGlobalError(err.message);
+    }
     setUiPhase('editing');
     setPendingFork(null);
     setSelection(null);
@@ -131,7 +150,11 @@ export default function App() {
    * Re-fetches /resolved so the editor content updates to the new active path.
    */
   async function handleBranchSwitch() {
-    await refreshSegments();
+    try {
+      await refreshSegments();
+    } catch (err) {
+      setGlobalError(err.message);
+    }
     // Switch back to editor so the writer sees the effect immediately
     setActiveView('editor');
   }
@@ -156,6 +179,20 @@ export default function App() {
 
   return (
     <div className="app">
+      {/* Global error banner — shown for top-level API failures */}
+      {globalError && (
+        <div className="app__error-banner" role="alert">
+          <span className="app__error-banner-msg">{globalError}</span>
+          <button
+            className="app__error-banner-close"
+            onClick={() => setGlobalError(null)}
+            aria-label="Dismiss error"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
       {/* ------------------------------------------------------------------ */}
       {/* View toggle — top-right corner tab pair                             */}
       {/* ------------------------------------------------------------------ */}
@@ -177,6 +214,16 @@ export default function App() {
           title={isLocked ? 'Tree unavailable while a fork is pending' : undefined}
         >
           Decision tree
+        </button>
+        <button
+          role="tab"
+          aria-selected={false}
+          className="view-tab"
+          onClick={() => setShowConsistency(true)}
+          disabled={isLocked}
+          title={isLocked ? 'Consistency check unavailable while a fork is pending' : 'Check plot/intent consistency'}
+        >
+          Check consistency
         </button>
       </div>
 
@@ -253,6 +300,16 @@ export default function App() {
         <TreeView
           docId={DOC_ID}
           onSwitch={handleBranchSwitch}
+        />
+      )}
+
+      {/* ------------------------------------------------------------------ */}
+      {/* P5 CONSISTENCY PANEL — modal overlay                               */}
+      {/* ------------------------------------------------------------------ */}
+      {showConsistency && (
+        <ConsistencyPanel
+          docId={DOC_ID}
+          onClose={() => setShowConsistency(false)}
         />
       )}
     </div>

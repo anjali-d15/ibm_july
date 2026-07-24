@@ -159,3 +159,54 @@
   padding: 0.2rem 0.65rem;
   font-size: 0.78rem;
 }
+
+/* ---- P5 Consistency verdict section ---- */
+.node-detail__consistency {
+  padding: 0.65rem 0.85rem;
+  border-top: 1px solid #e5e7eb;
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.node-detail__consistency-label {
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: #57606a;
+  flex-shrink: 0;
+  align-self: center;
+}
+
+.node-detail__verdict-badge {
+  display: inline-block;
+  padding: 0.15rem 0.55rem;
+  border-radius: 3px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  flex-shrink: 0;
+  align-self: center;
+}
+
+.node-detail__verdict-badge--intentional {
+  background: #e6f4ea;
+  color: #1a6b2f;
+}
+
+.node-detail__verdict-badge--flagged {
+  background: #fff3cd;
+  color: #7a4800;
+}
+
+.node-detail__consistency-note {
+  width: 100%;
+  font-size: 0.83rem;
+  color: #57606a;
+  margin: 0.25rem 0 0;
+  line-height: 1.5;
+  font-style: italic;
+}

@@ -4,3 +4,7 @@ node_modules/
 dist/
 client/dist/
 server/ledger.db-*
+ledger.db*
+*.db
+*.db-wal
+*.db-shm

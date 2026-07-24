@@ -1,0 +1,309 @@
+/* ConsistencyPanel.css — P5 Consistency checker modal */
+
+/* Full-screen backdrop */
+.cp__backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(31, 35, 40, 0.55);
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+}
+
+/* Modal card */
+.cp__modal {
+  background: #ffffff;
+  border: 1px solid #d0d7de;
+  border-radius: 8px;
+  width: 100%;
+  max-width: 680px;
+  max-height: 85vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* Header */
+.cp__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.9rem 1.25rem;
+  border-bottom: 1px solid #e5e7eb;
+  flex-shrink: 0;
+}
+
+.cp__title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: #1f2328;
+}
+
+.cp__close {
+  background: none;
+  border: none;
+  font-size: 1rem;
+  color: #57606a;
+  cursor: pointer;
+  padding: 0.2rem 0.4rem;
+  border-radius: 4px;
+  line-height: 1;
+}
+
+.cp__close:hover {
+  background: #f0f0f0;
+  color: #1f2328;
+}
+
+/* Body */
+.cp__body {
+  padding: 1.25rem;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.cp__body--centered {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  min-height: 140px;
+  text-align: center;
+}
+
+/* Loading spinner */
+.cp__spinner {
+  display: inline-block;
+  width: 1.25rem;
+  height: 1.25rem;
+  border: 2px solid #d0d7de;
+  border-top-color: #3b82d4;
+  border-radius: 50%;
+  animation: cp-spin 0.7s linear infinite;
+  vertical-align: middle;
+  flex-shrink: 0;
+}
+
+.cp__spinner--sm {
+  width: 0.85rem;
+  height: 0.85rem;
+  margin-right: 0.35rem;
+  border-width: 2px;
+}
+
+@keyframes cp-spin {
+  to { transform: rotate(360deg); }
+}
+
+.cp__loading-text {
+  color: #57606a;
+  font-size: 0.9rem;
+  margin: 0;
+}
+
+/* Error banner */
+.cp__error-banner {
+  background: #fef2f2;
+  border: 1px solid #fca5a5;
+  color: #c0392b;
+  border-radius: 4px;
+  padding: 0.7rem 1rem;
+  font-size: 0.875rem;
+  margin-bottom: 1rem;
+}
+
+/* Empty state */
+.cp__empty-msg {
+  color: #2da44e;
+  font-size: 1rem;
+  font-weight: 600;
+  margin: 0;
+}
+
+/* Progress */
+.cp__progress {
+  font-size: 0.78rem;
+  color: #57606a;
+  margin-bottom: 1rem;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Fork context card */
+.cp__fork-context {
+  background: #f7f8fa;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  padding: 0.9rem 1rem;
+  margin-bottom: 1rem;
+}
+
+.cp__fork-context-cols {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.75rem;
+  margin-bottom: 0.6rem;
+}
+
+@media (max-width: 520px) {
+  .cp__fork-context-cols {
+    grid-template-columns: 1fr;
+  }
+}
+
+.cp__col-label {
+  display: block;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: #57606a;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 0.35rem;
+}
+
+.cp__col-text {
+  font-size: 0.875rem;
+  color: #1f2328;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
+.cp__fork-why {
+  border-top: 1px solid #e5e7eb;
+  padding-top: 0.6rem;
+  margin-top: 0.6rem;
+}
+
+.cp__why-label {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: #57606a;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.cp__why-text {
+  font-size: 0.875rem;
+  color: #1f2328;
+  margin: 0.3rem 0 0;
+  line-height: 1.55;
+  font-style: italic;
+}
+
+/* Question */
+.cp__question {
+  margin-bottom: 1rem;
+}
+
+.cp__question-label {
+  display: block;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: #57606a;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 0.4rem;
+}
+
+.cp__question-text {
+  font-size: 0.925rem;
+  color: #1f2328;
+  line-height: 1.6;
+  margin: 0;
+}
+
+/* Note textarea */
+.cp__note-row {
+  margin-bottom: 1rem;
+}
+
+.cp__note-label {
+  display: block;
+  font-size: 0.78rem;
+  color: #57606a;
+  margin-bottom: 0.4rem;
+}
+
+.cp__note-textarea {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid #d0d7de;
+  border-radius: 4px;
+  font-family: inherit;
+  font-size: 0.875rem;
+  color: #1f2328;
+  resize: vertical;
+  min-height: 72px;
+}
+
+.cp__note-textarea:focus {
+  outline: none;
+  border-color: #3b82d4;
+  box-shadow: 0 0 0 3px rgba(59, 130, 212, 0.15);
+}
+
+.cp__note-textarea:disabled {
+  background: #f7f8fa;
+  color: #57606a;
+}
+
+/* Actions row */
+.cp__actions {
+  display: flex;
+  gap: 0.75rem;
+  justify-content: flex-end;
+  margin-top: 0.5rem;
+}
+
+.cp__actions--verdict {
+  margin-top: 0;
+}
+
+/* Done summary */
+.cp__done-msg {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: #1f2328;
+  margin: 0 0 0.9rem;
+}
+
+.cp__summary-list {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.cp__summary-item {
+  font-size: 0.875rem;
+  color: #1f2328;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+/* Verdict badges */
+.cp__verdict-badge {
+  display: inline-block;
+  padding: 0.15rem 0.55rem;
+  border-radius: 3px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.cp__summary-item--intentional .cp__verdict-badge {
+  background: #e6f4ea;
+  color: #1a6b2f;
+}
+
+.cp__summary-item--flagged .cp__verdict-badge {
+  background: #fff3cd;
+  color: #7a4800;
+}

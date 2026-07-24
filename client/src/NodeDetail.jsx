@@ -102,6 +102,19 @@ export default function NodeDetail({ fork, onSwitch, switching, onWhyUpdated }) 
         )}
       </div>
 
+      {/* P5 — consistency verdict section */}
+      {fork.consistency_verdict && (
+        <div className="node-detail__consistency">
+          <span className="node-detail__consistency-label">Consistency check</span>
+          <span className={`node-detail__verdict-badge node-detail__verdict-badge--${fork.consistency_verdict}`}>
+            {fork.consistency_verdict === 'intentional' ? 'Intentional' : 'Flagged'}
+          </span>
+          {fork.consistency_note && (
+            <p className="node-detail__consistency-note">{fork.consistency_note}</p>
+          )}
+        </div>
+      )}
+
       {/* Switch action */}
       {canSwitch && (
         <div className="node-detail__actions">

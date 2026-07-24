@@ -7,7 +7,7 @@ const cors = require('cors');
 const crypto = require('node:crypto');
 const { getDb } = require('./db');
 const { resolveDocument } = require('./resolve');
-const { generateAlternative, draftWhySummary } = require('./granite');
+const { generateAlternative, draftWhySummary, checkConsistency } = require('./granite');
 const { v4: uuidv4 } = require('uuid');
 
 const app = express();
@@ -117,7 +117,8 @@ app.get('/document/:id/tree', (req, res) => {
     .prepare(
       `SELECT id, parent_fork_id, anchor_start, anchor_end,
               original_snippet, branch_content, why,
-              status, is_active, created_at, updated_at
+              status, is_active, created_at, updated_at,
+              consistency_verdict, consistency_note
        FROM forks WHERE document_id = ? ORDER BY created_at ASC`
     )
     .all(req.params.id);
@@ -144,9 +145,15 @@ app.patch('/document/:id/content', (req, res) => {
     return res.status(409).json({ error: 'Document is locked: a fork is pending review' });
   }
 
-  const result = db
-    .prepare('UPDATE documents SET root_content = ? WHERE id = ?')
-    .run(content, req.params.id);
+  let result;
+  try {
+    result = db
+      .prepare('UPDATE documents SET root_content = ? WHERE id = ?')
+      .run(content, req.params.id);
+  } catch (err) {
+    console.error('[content] DB write failed:', err.message);
+    return res.status(500).json({ error: 'Failed to save content' });
+  }
   if (result.changes === 0) return res.status(404).json({ error: 'Document not found' });
   res.json({ ok: true });
 });
@@ -303,9 +310,13 @@ app.post('/fork/:id/approve', (req, res) => {
   draftWhySummary(fork.original_snippet, fork.branch_content)
     .then((why) => {
       const clamped = why.slice(0, WHY_MAX_LENGTH);
-      db.prepare(
-        `UPDATE forks SET why = ?, updated_at = datetime('now') WHERE id = ?`
-      ).run(clamped, forkId);
+      try {
+        db.prepare(
+          `UPDATE forks SET why = ?, updated_at = datetime('now') WHERE id = ?`
+        ).run(clamped, forkId);
+      } catch (dbErr) {
+        console.error('[approve] async why DB write failed (why left null):', dbErr.message);
+      }
     })
     .catch((err) => {
       console.error('[approve] async why-summary failed (why left null):', err.message);
@@ -322,13 +333,19 @@ app.post('/fork/:id/reject', (req, res) => {
   const db = getDb();
   const forkId = req.params.id;
 
-  const result = db
-    .prepare(
-      `UPDATE forks
-         SET status = 'resolved', updated_at = datetime('now')
-       WHERE id = ? AND status = 'proposed'`
-    )
-    .run(forkId);
+  let result;
+  try {
+    result = db
+      .prepare(
+        `UPDATE forks
+           SET status = 'resolved', updated_at = datetime('now')
+         WHERE id = ? AND status = 'proposed'`
+      )
+      .run(forkId);
+  } catch (err) {
+    console.error('[reject] DB write failed:', err.message);
+    return res.status(500).json({ error: 'Failed to reject fork' });
+  }
 
   if (result.changes === 0) {
     const fork = db.prepare(`SELECT id FROM forks WHERE id = ?`).get(forkId);
@@ -353,13 +370,19 @@ app.post('/fork/:id/cancel', (req, res) => {
   const db = getDb();
   const forkId = req.params.id;
 
-  const result = db
-    .prepare(
-      `UPDATE forks
-         SET status = 'failed', updated_at = datetime('now')
-       WHERE id = ? AND status = 'proposed'`
-    )
-    .run(forkId);
+  let result;
+  try {
+    result = db
+      .prepare(
+        `UPDATE forks
+           SET status = 'failed', updated_at = datetime('now')
+         WHERE id = ? AND status = 'proposed'`
+      )
+      .run(forkId);
+  } catch (err) {
+    console.error('[cancel] DB write failed:', err.message);
+    return res.status(500).json({ error: 'Failed to cancel fork' });
+  }
 
   if (result.changes === 0) {
     const fork = db.prepare(`SELECT id FROM forks WHERE id = ?`).get(forkId);
@@ -385,13 +408,19 @@ app.post('/document/:id/force-unlock', (req, res) => {
   const doc = db.prepare('SELECT id FROM documents WHERE id = ?').get(docId);
   if (!doc) return res.status(404).json({ error: 'Document not found' });
 
-  const result = db
-    .prepare(
-      `UPDATE forks
-         SET status = 'failed', updated_at = datetime('now')
-       WHERE document_id = ? AND status = 'proposed'`
-    )
-    .run(docId);
+  let result;
+  try {
+    result = db
+      .prepare(
+        `UPDATE forks
+           SET status = 'failed', updated_at = datetime('now')
+         WHERE document_id = ? AND status = 'proposed'`
+      )
+      .run(docId);
+  } catch (err) {
+    console.error('[force-unlock] DB write failed:', err.message);
+    return res.status(500).json({ error: 'Failed to force-unlock document' });
+  }
 
   res.json({ ok: true, forksUnlocked: result.changes });
 });
@@ -477,11 +506,16 @@ app.post('/fork/:id/why', async (req, res) => {
     if (manualWhy.length > WHY_MAX_LENGTH) {
       return res.status(400).json({ error: `why must be ${WHY_MAX_LENGTH} characters or fewer` });
     }
-    db.prepare(
-      `UPDATE forks SET why = ?, updated_at = datetime('now') WHERE id = ?`
-    ).run(manualWhy || null, forkId);
-    const updated = db.prepare(`SELECT id, why FROM forks WHERE id = ?`).get(forkId);
-    return res.json({ fork: updated });
+    try {
+      db.prepare(
+        `UPDATE forks SET why = ?, updated_at = datetime('now') WHERE id = ?`
+      ).run(manualWhy || null, forkId);
+      const updated = db.prepare(`SELECT id, why FROM forks WHERE id = ?`).get(forkId);
+      return res.json({ fork: updated });
+    } catch (err) {
+      console.error('[why] manual DB write failed:', err.message);
+      return res.status(500).json({ error: 'Failed to save why text' });
+    }
   }
 
   // AI-generation path
@@ -494,9 +528,124 @@ app.post('/fork/:id/why', async (req, res) => {
     const updated = db.prepare(`SELECT id, why FROM forks WHERE id = ?`).get(forkId);
     return res.json({ fork: updated });
   } catch (err) {
-    console.error('[why] Granite error:', err.message);
+    console.error('[why] error:', err.message);
     return res.status(502).json({ error: `Why generation failed: ${err.message}` });
   }
+});
+
+// ---------------------------------------------------------------------------
+// P5 — POST /document/:id/check-consistency
+//
+// Reads the resolved document + all active-path forks that have a non-null why.
+// Sends them to Granite for a consistency check.
+// Returns { findings: [{ fork_id, question }] } — empty array = no contradictions.
+// Disabled while a fork is pending (same gate as all other fork operations).
+// ---------------------------------------------------------------------------
+app.post('/document/:id/check-consistency', async (req, res) => {
+  const db = getDb();
+  const docId = req.params.id;
+
+  const doc = db.prepare('SELECT id FROM documents WHERE id = ?').get(docId);
+  if (!doc) return res.status(404).json({ error: 'Document not found' });
+
+  // Block while a fork is pending
+  const pending = db
+    .prepare(`SELECT id FROM forks WHERE document_id = ? AND status = 'proposed' LIMIT 1`)
+    .get(docId);
+  if (pending) {
+    return res.status(409).json({ error: 'Document is locked: a fork is pending review' });
+  }
+
+  // Collect resolved document text
+  const segments = resolveDocument(docId);
+  if (!segments) return res.status(404).json({ error: 'Document not found' });
+  const resolvedText = segments.map((s) => s.text).join('');
+
+  // Active-path forks with non-null why, ordered oldest first
+  const decisions = db
+    .prepare(
+      `SELECT id, why FROM forks
+       WHERE document_id = ? AND is_active = 1 AND status = 'resolved' AND why IS NOT NULL
+       ORDER BY created_at ASC`
+    )
+    .all(docId);
+
+  if (decisions.length === 0) {
+    // Nothing to check against — no recorded intent
+    return res.json({ findings: [] });
+  }
+
+  try {
+    const findings = await checkConsistency(resolvedText, decisions);
+    return res.json({ findings });
+  } catch (err) {
+    console.error('[check-consistency] Granite error:', err.message);
+    return res.status(502).json({ error: `Consistency check failed: ${err.message}` });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// P5 — PATCH /fork/:id/consistency
+//
+// Store consistency_verdict and optional consistency_note for one finding.
+// Only writes when consistency_verdict IS NULL on the target fork (never
+// overwrites an existing verdict). Returns 409 if document has a pending fork.
+// ---------------------------------------------------------------------------
+app.patch('/fork/:id/consistency', (req, res) => {
+  const db = getDb();
+  const forkId = req.params.id;
+  const { verdict, note } = req.body;
+
+  // Validate verdict
+  if (verdict !== 'intentional' && verdict !== 'flagged') {
+    return res.status(400).json({ error: 'verdict must be "intentional" or "flagged"' });
+  }
+
+  // Validate note length
+  if (note !== undefined && note !== null) {
+    if (typeof note !== 'string') {
+      return res.status(400).json({ error: 'note must be a string if provided' });
+    }
+    if (note.length > 2000) {
+      return res.status(400).json({ error: 'note must be 2000 characters or fewer' });
+    }
+  }
+
+  const fork = db
+    .prepare(`SELECT id, document_id, consistency_verdict FROM forks WHERE id = ?`)
+    .get(forkId);
+
+  if (!fork) return res.status(404).json({ error: 'Fork not found' });
+
+  // Block while a fork is pending
+  const pending = db
+    .prepare(`SELECT id FROM forks WHERE document_id = ? AND status = 'proposed' LIMIT 1`)
+    .get(fork.document_id);
+  if (pending) {
+    return res.status(409).json({ error: 'Document is locked: a fork is pending review' });
+  }
+
+  // Never overwrite an existing verdict
+  if (fork.consistency_verdict !== null && fork.consistency_verdict !== undefined) {
+    return res.json({ ok: true, skipped: true });
+  }
+
+  try {
+    db.prepare(
+      `UPDATE forks
+         SET consistency_verdict = ?, consistency_note = ?, updated_at = datetime('now')
+       WHERE id = ?`
+    ).run(verdict, note ?? null, forkId);
+  } catch (err) {
+    console.error('[consistency] DB write failed:', err.message);
+    return res.status(500).json({ error: 'Failed to save consistency verdict' });
+  }
+
+  const updated = db
+    .prepare(`SELECT id, consistency_verdict, consistency_note FROM forks WHERE id = ?`)
+    .get(forkId);
+
+  res.json({ ok: true, fork: updated });
 });
 
 // ---------------------------------------------------------------------------

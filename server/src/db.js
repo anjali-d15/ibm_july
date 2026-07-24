@@ -50,6 +50,18 @@ const SCHEMA = `
 `;
 
 // ---------------------------------------------------------------------------
+// P5 migration: add consistency columns if they don't already exist.
+// ALTER TABLE IF NOT EXISTS … COLUMN is available in SQLite >= 3.37 (2021).
+// These are additive-only — no data loss on existing rows.
+// ---------------------------------------------------------------------------
+const P5_MIGRATION = `
+  ALTER TABLE forks ADD COLUMN consistency_verdict TEXT
+    CHECK(consistency_verdict IS NULL OR consistency_verdict IN ('intentional','flagged'));
+  ALTER TABLE forks ADD COLUMN consistency_note TEXT
+    CHECK(consistency_note IS NULL OR length(consistency_note) <= 2000);
+`;
+
+// ---------------------------------------------------------------------------
 // Seed data
 // ---------------------------------------------------------------------------
 const SEED_DOCUMENT_ID = 'doc_hardcoded_001';
@@ -68,10 +80,35 @@ let db;
 function getDb() {
   if (!db) {
     db = new DatabaseSync(DB_PATH);
+    // Keep temp rollback journals in RAM — avoids /tmp disk-space exhaustion.
+    // Must be set before any other statement; it's a session pragma, not stored.
+    db.exec('PRAGMA temp_store = MEMORY');
     db.exec(SCHEMA);
+    runMigrations(db);
     seedDocument(db);
   }
   return db;
+}
+
+/**
+ * Idempotent schema migrations — each ALTER is wrapped in a try/catch so
+ * re-running against a DB that already has the column is a no-op.
+ */
+function runMigrations(database) {
+  const statements = P5_MIGRATION
+    .split(';')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  for (const sql of statements) {
+    try {
+      database.exec(sql);
+    } catch (err) {
+      // "duplicate column name" means the migration already ran — safe to ignore
+      if (!err.message || !err.message.includes('duplicate column name')) {
+        throw err;
+      }
+    }
+  }
 }
 
 function seedDocument(database) {
