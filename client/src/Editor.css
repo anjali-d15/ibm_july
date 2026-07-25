@@ -16,6 +16,30 @@
   z-index: 10;
 }
 
+.editor-header__right {
+  display: flex;
+  align-items: center;
+  gap: 1.25rem;
+}
+
+.editor-nav-btn {
+  background: none;
+  border: none;
+  font-size: 0.82rem;
+  color: #57606a;
+  cursor: pointer;
+  font-family: inherit;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.editor-nav-btn:hover {
+  color: #1f2328;
+  text-decoration: underline;
+}
+
 .editor-title {
   font-size: 1rem;
   font-weight: 600;

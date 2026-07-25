@@ -148,6 +148,7 @@ export default function App() {
   /**
    * handleBranchSwitch — called by TreeView after a successful /fork/:id/switch.
    * Re-fetches /resolved so the editor content updates to the new active path.
+   * Stays on tree view so the user sees the updated tree before going back.
    */
   async function handleBranchSwitch() {
     try {
@@ -155,8 +156,6 @@ export default function App() {
     } catch (err) {
       setGlobalError(err.message);
     }
-    // Switch back to editor so the writer sees the effect immediately
-    setActiveView('editor');
   }
 
   // -------------------------------------------------------------------------
@@ -194,40 +193,6 @@ export default function App() {
       )}
 
       {/* ------------------------------------------------------------------ */}
-      {/* View toggle — top-right corner tab pair                             */}
-      {/* ------------------------------------------------------------------ */}
-      <div className="app__view-toggle" role="tablist" aria-label="Switch view">
-        <button
-          role="tab"
-          aria-selected={activeView === 'editor'}
-          className={`view-tab${activeView === 'editor' ? ' view-tab--active' : ''}`}
-          onClick={() => setActiveView('editor')}
-        >
-          Editor
-        </button>
-        <button
-          role="tab"
-          aria-selected={activeView === 'tree'}
-          className={`view-tab${activeView === 'tree' ? ' view-tab--active' : ''}`}
-          onClick={() => setActiveView('tree')}
-          disabled={isLocked}
-          title={isLocked ? 'Tree unavailable while a fork is pending' : undefined}
-        >
-          Decision tree
-        </button>
-        <button
-          role="tab"
-          aria-selected={false}
-          className="view-tab"
-          onClick={() => setShowConsistency(true)}
-          disabled={isLocked}
-          title={isLocked ? 'Consistency check unavailable while a fork is pending' : 'Check plot/intent consistency'}
-        >
-          Check consistency
-        </button>
-      </div>
-
-      {/* ------------------------------------------------------------------ */}
       {/* EDITOR VIEW                                                         */}
       {/* ------------------------------------------------------------------ */}
       {activeView === 'editor' && (
@@ -262,6 +227,7 @@ export default function App() {
             segments={segments}
             locked={isLocked}
             onSelectionChange={setSelection}
+            onVersionHistory={isLocked ? undefined : () => setActiveView('tree')}
           />
 
           {/* Why suggestion panel — non-blocking, appears after approve */}
@@ -294,12 +260,14 @@ export default function App() {
       )}
 
       {/* ------------------------------------------------------------------ */}
-      {/* TREE VIEW                                                           */}
+      {/* TREE VIEW — owns its own full-page shell + header                  */}
       {/* ------------------------------------------------------------------ */}
       {activeView === 'tree' && (
         <TreeView
           docId={DOC_ID}
+          onBackToEditor={() => setActiveView('editor')}
           onSwitch={handleBranchSwitch}
+          onCheckConsistency={() => setShowConsistency(true)}
         />
       )}
 

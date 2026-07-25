@@ -1,171 +1,557 @@
 /* ============================================================
-   TreeView — decision-tree visualisation
+   Version history — TreeView
+   Matches Figma: warm off-white bg, floating cards, SVG curves,
+   right-side detail panel, header bar.
    ============================================================ */
 
-.tree-view {
-  padding: 2rem 1.5rem;
-  max-width: 860px;
-  margin: 0 auto;
-  font-size: 0.92rem;
-  line-height: 1.5;
+/* ================================================================
+   Shell
+   ================================================================ */
+
+.vhist-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+  background: #f5f4f0;  /* warm off-white matching Figma */
+  font-family: -apple-system, 'Segoe UI', system-ui, sans-serif;
   color: #1f2328;
 }
 
-.tree-view--loading,
-.tree-view--empty,
-.tree-view--error {
-  color: #57606a;
-  padding: 3rem 1.5rem;
-  text-align: center;
-}
+/* ================================================================
+   Header bar
+   ================================================================ */
 
-.tree-view--error { color: #c0392b; }
-
-/* ---- Legend ---- */
-.tree-view__legend {
+.vhist-header {
   display: flex;
   align-items: center;
-  gap: 1.25rem;
-  margin-bottom: 1.75rem;
-  padding-bottom: 0.75rem;
+  justify-content: space-between;
+  padding: 0 1.5rem;
+  height: 52px;
+  flex-shrink: 0;
+  background: #ffffff;
   border-bottom: 1px solid #e5e7eb;
-  flex-wrap: wrap;
+  z-index: 20;
 }
 
-.legend-item {
-  font-size: 0.78rem;
+.vhist-header__left {
+  display: flex;
+  align-items: center;
+  gap: 0;
+}
+
+.vhist-header__back {
   display: flex;
   align-items: center;
   gap: 0.35rem;
+  background: none;
+  border: none;
+  font-size: 0.875rem;
   color: #57606a;
+  cursor: pointer;
+  padding: 0.25rem 0;
+  font-family: inherit;
 }
 
-.legend-item::before {
-  content: '';
+.vhist-header__back:hover {
+  color: #1f2328;
+}
+
+.vhist-header__back-arrow {
+  font-size: 0.95rem;
+  line-height: 1;
+}
+
+.vhist-header__divider {
   display: inline-block;
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  flex-shrink: 0;
+  width: 1px;
+  height: 18px;
+  background: #d0d7de;
+  margin: 0 1rem;
 }
 
-.legend-item--active::before  { background: #2da44e; }
-.legend-item--inactive::before { background: #adb5bd; }
-.legend-item--failed::before  { background: #d1242f; }
-.legend-item--pending::before { background: #d29922; }
+.vhist-header__title {
+  font-size: 0.975rem;
+  font-weight: 600;
+  color: #1f2328;
+  display: flex;
+  align-items: center;
+}
 
-/* ---- Node groups (wraps the node row + children) ---- */
-.tree-node-group {
+.vhist-header__right {
+  display: flex;
+  align-items: center;
+  gap: 1.25rem;
+}
+
+.vhist-header__stats {
+  font-size: 0.82rem;
+  color: #57606a;
+  white-space: nowrap;
+}
+
+.vhist-header__consistency-btn {
+  background: none;
+  border: none;
+  font-size: 0.82rem;
+  color: #57606a;
+  cursor: pointer;
+  font-family: inherit;
+  padding: 0.2rem 0;
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.vhist-header__consistency-btn:hover:not(:disabled) {
+  color: #1f2328;
+}
+
+.vhist-header__consistency-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* ================================================================
+   Body — canvas + optional right panel
+   ================================================================ */
+
+.vhist-body {
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+}
+
+/* ================================================================
+   Canvas wrapper — scrollable
+   ================================================================ */
+
+.vhist-canvas-wrap {
+  flex: 1;
+  overflow: auto;
   position: relative;
 }
 
-/* ---- Indent children ---- */
-.tree-children {
-  border-left: 2px solid #e5e7eb;
-  margin-left: 1.2rem;
-  padding-left: 0;
+/* The absolutely-positioned canvas */
+.vhist-canvas {
+  position: relative;
+  /* width and minHeight set inline from layout */
 }
 
-/* ---- Node row ---- */
-.tree-node {
-  display: flex;
-  align-items: center;
-  gap: 0.6rem;
-  padding: 0.5rem 0.75rem;
-  margin: 0.25rem 0;
-  border-radius: 5px;
-  cursor: pointer;
-  border: 1px solid transparent;
-  background: #f7f8fa;
-  transition: background 0.1s, border-color 0.1s;
+/* SVG layer — fills canvas, sits behind cards */
+.vhist-svg {
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: none;
+}
+
+/* ================================================================
+   SVG edges (connectors)
+   ================================================================ */
+
+.vhist-edge {
+  fill: none;
+  stroke-width: 1.5;
+}
+
+.vhist-edge--active {
+  stroke: #b0b0b0;   /* medium gray solid — active path */
+  stroke-dasharray: none;
+}
+
+.vhist-edge--inactive {
+  stroke: #cccccc;   /* lighter gray dashed — inactive branch */
+  stroke-dasharray: 5 4;
+}
+
+/* ================================================================
+   Document-order sequence line
+   Visually distinct from branch connectors: different colour,
+   no fill, arrowhead at right end, small "document order" label.
+   ================================================================ */
+
+/* The horizontal polyline connecting cluster root centres */
+.vhist-seq-line {
+  fill: none;
+  stroke: #a0aec0;        /* blue-gray — clearly different from gray branch lines */
+  stroke-width: 1px;
+  stroke-dasharray: 4 3;  /* dashed to signal "sequence, not causation" */
+}
+
+/* Arrowhead fill — must match stroke colour */
+.vhist-seq-arrow {
+  fill: #a0aec0;
+  stroke: none;
+}
+
+/* "document order" text label */
+.vhist-seq-label {
+  font-size: 9px;
+  font-family: -apple-system, 'Segoe UI', system-ui, sans-serif;
+  fill: #a0aec0;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  pointer-events: none;
   user-select: none;
 }
 
-.tree-node:hover {
-  background: #eef1f6;
-  border-color: #d0d7de;
+/* ================================================================
+   Cards — absolutely positioned, hover/click feedback
+   ================================================================ */
+
+.vhist-card {
+  position: absolute;
+  height: 120px;  /* matches CARD_H constant */
+  border-radius: 10px;
+  padding: 0.85rem 1rem;
+  cursor: pointer;
+  overflow: hidden;
+  box-sizing: border-box;
+  transition: box-shadow 0.12s, transform 0.1s;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  /* Default (inactive) style */
+  background: #ece9e3;
+  border: 1px solid #dbd8d1;
 }
 
-.tree-node--selected {
-  border-color: #3b82d4 !important;
-  background: #eff5ff !important;
+.vhist-card:hover {
+  box-shadow: 0 3px 12px rgba(0,0,0,0.1);
+  transform: translateY(-1px);
 }
 
-/* Active-path: bold, saturated green accent */
-.tree-node--active {
-  background: #e6f6ec;
-  border-color: #9be9b8;
+/* Cluster root / "Original" card — light bordered, non-interactive */
+.vhist-card--root {
+  background: #ffffff;
+  border: 1px solid #d0d0c8;
+  cursor: default;
 }
 
-.tree-node--active .tree-node__snippet {
-  font-weight: 600;
-  color: #116329;
+.vhist-card--root:hover {
+  transform: none;
+  box-shadow: none;
 }
 
-/* Inactive (rejected): lightened, grayed — still fully clickable */
-.tree-node--inactive {
-  background: #f7f8fa;
-  opacity: 0.72;
+/* Original kept (all siblings rejected) — subtle warm tint to indicate it's "active" */
+.vhist-card--root-active {
+  background: #fafaf7;
+  border: 1px solid #b8b8a8;
 }
 
-.tree-node--inactive .tree-node__snippet {
-  color: #57606a;
+.vhist-card--root-active .vhist-card__label {
+  color: #4a4a38;
+}
+
+/* Current (active) node — dark filled, white text */
+.vhist-card--current {
+  background: #1f2328;
+  border-color: #1f2328;
+  color: #ffffff;
+}
+
+/* On active path but not the leaf — light green tint */
+.vhist-card--on-path {
+  background: #f0f5f1;
+  border-color: #c8dccb;
+}
+
+.vhist-card--on-path .vhist-card__label {
+  color: #3a7046;
+}
+
+/* Inactive / rejected — muted, slightly transparent */
+.vhist-card--inactive {
+  background: #ece9e3;
+  border-color: #dbd8d1;
+  opacity: 0.85;
 }
 
 /* Failed */
-.tree-node--failed {
-  opacity: 0.6;
-}
-
-.tree-node--failed .tree-node__snippet {
-  color: #8b1d1d;
-  text-decoration: line-through;
+.vhist-card--failed {
+  background: #f5ece8;
+  border-color: #e0c8c0;
+  opacity: 0.7;
 }
 
 /* Pending */
-.tree-node--pending {
-  background: #fff8e4;
-  border-color: #f0c832;
+.vhist-card--pending {
+  background: #fdf8e8;
+  border-color: #e8d898;
 }
 
-.tree-node--pending .tree-node__snippet {
-  color: #7a5800;
+/* Selected — blue outline */
+.vhist-card--selected {
+  box-shadow: 0 0 0 2px #3b82d4, 0 3px 12px rgba(59,130,212,0.2) !important;
+  transform: translateY(-1px) !important;
 }
 
-/* ---- Connector line ---- */
-.tree-node__connector {
-  display: none; /* handled by left-border on .tree-children */
+/* ---- Card internals ---- */
+
+.vhist-card__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.4rem;
 }
 
-/* ---- Status badge ---- */
-.tree-node__badge--status {
-  font-size: 0.7rem;
+.vhist-card__label {
+  font-size: 0.65rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #57606a;
+}
+
+.vhist-card--current .vhist-card__label {
+  color: rgba(255,255,255,0.6);
+}
+
+/* "Current" badge pill */
+.vhist-card__badge {
+  font-size: 0.62rem;
   font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.07em;
   padding: 0.1rem 0.45rem;
+  border-radius: 10px;
+  background: rgba(255,255,255,0.2);
+  color: #ffffff;
+  flex-shrink: 0;
+  border: 1px solid rgba(255,255,255,0.25);
+}
+
+.vhist-card__snippet {
+  font-size: 0.82rem;
+  line-height: 1.5;
+  color: #1f2328;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+}
+
+.vhist-card--current .vhist-card__snippet {
+  color: rgba(255,255,255,0.88);
+}
+
+.vhist-card--inactive .vhist-card__snippet,
+.vhist-card--failed   .vhist-card__snippet {
+  color: #7a7670;
+}
+
+.vhist-card__snippet--root {
+  color: #57606a;
+  font-size: 0.8rem;
+}
+
+/* ================================================================
+   Right-side detail panel
+   ================================================================ */
+
+.vhist-shell--panel-open .vhist-canvas-wrap {
+  /* Canvas shrinks to make room for the panel */
+}
+
+.vhist-detail {
+  width: 320px;
+  flex-shrink: 0;
+  background: #ffffff;
+  border-left: 1px solid #e5e7eb;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* ---- Detail header ---- */
+.vhist-detail__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding: 1.1rem 1.25rem 0.75rem;
+  border-bottom: 1px solid #e5e7eb;
+  flex-shrink: 0;
+}
+
+.vhist-detail__header-left {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  flex-wrap: wrap;
+}
+
+.vhist-detail__title {
+  font-size: 0.975rem;
+  font-weight: 600;
+  color: #1f2328;
+}
+
+.vhist-detail__badge {
+  font-size: 0.66rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  padding: 0.12rem 0.5rem;
+  border-radius: 10px;
+}
+
+.vhist-detail__badge--current  { background: #1f2328; color: #ffffff; }
+.vhist-detail__badge--on-path  { background: #d6ead9; color: #2d6b39; }
+.vhist-detail__badge--inactive { background: #e5e7eb; color: #57606a; }
+.vhist-detail__badge--failed   { background: #ffe0e2; color: #8b1d1d; }
+.vhist-detail__badge--pending  { background: #fde68a; color: #7a5800; }
+
+.vhist-detail__close {
+  background: none;
+  border: none;
+  color: #57606a;
+  cursor: pointer;
+  font-size: 0.9rem;
+  padding: 0.1rem 0.2rem;
+  line-height: 1;
   border-radius: 3px;
   flex-shrink: 0;
-  white-space: nowrap;
 }
 
-.tree-node--active  .tree-node__badge--status { background: #cdf0d9; color: #116329; }
-.tree-node--inactive .tree-node__badge--status { background: #e5e7eb; color: #57606a; }
-.tree-node--failed  .tree-node__badge--status { background: #ffe0e2; color: #8b1d1d; }
-.tree-node--pending .tree-node__badge--status { background: #fde68a; color: #7a5800; }
+.vhist-detail__close:hover { color: #1f2328; background: #f0f1f3; }
 
-/* ---- Snippet text ---- */
-.tree-node__snippet {
-  font-size: 0.88rem;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
+/* ---- Detail body — scrollable ---- */
+.vhist-detail__body {
   flex: 1;
-  min-width: 0;
+  overflow-y: auto;
+  padding: 0 1.25rem 1.25rem;
 }
 
-/* ---- Detail panel wrapper ---- */
-.tree-node__detail-wrapper {
-  margin: 0 0 0.5rem 0;
-  margin-left: 0.75rem;
+.vhist-detail__section {
+  padding: 1rem 0 0;
 }
+
+.vhist-detail__section + .vhist-detail__section {
+  border-top: 1px solid #f0f1f3;
+  margin-top: 0;
+}
+
+.vhist-detail__section-label {
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #57606a;
+  margin-bottom: 0.5rem;
+}
+
+.vhist-detail__section-text {
+  font-size: 0.88rem;
+  line-height: 1.65;
+  color: #1f2328;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.vhist-detail__section-text--muted {
+  color: #57606a;
+}
+
+.vhist-detail__empty {
+  color: #adb5bd;
+  font-style: italic;
+}
+
+.vhist-detail__why-empty {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  align-items: flex-start;
+}
+
+.vhist-detail__why-none {
+  font-size: 0.86rem;
+  color: #adb5bd;
+  font-style: italic;
+}
+
+.vhist-detail__why-btn {
+  background: none;
+  border: 1px solid #d0d7de;
+  border-radius: 4px;
+  padding: 0.25rem 0.7rem;
+  font-size: 0.8rem;
+  font-family: inherit;
+  color: #1f2328;
+  cursor: pointer;
+}
+
+.vhist-detail__why-btn:hover:not(:disabled) {
+  background: #f3f4f6;
+}
+
+.vhist-detail__why-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.vhist-detail__why-error {
+  font-size: 0.78rem;
+  color: #c0392b;
+}
+
+/* ---- Detail footer ---- */
+.vhist-detail__footer {
+  padding: 0.9rem 1.25rem;
+  border-top: 1px solid #e5e7eb;
+  flex-shrink: 0;
+}
+
+.vhist-detail__switch-btn {
+  width: 100%;
+  background: #1f2328;
+  color: #ffffff;
+  border: none;
+  border-radius: 6px;
+  padding: 0.55rem 1rem;
+  font-size: 0.88rem;
+  font-family: inherit;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.vhist-detail__switch-btn:hover:not(:disabled) {
+  background: #333b43;
+}
+
+.vhist-detail__switch-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ================================================================
+   Loading / empty / error states
+   ================================================================ */
+
+.vhist-loading,
+.vhist-empty,
+.vhist-error {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.9rem;
+  color: #57606a;
+  gap: 0.75rem;
+}
+
+.vhist-error { color: #c0392b; }
+
+.vhist-retry-btn {
+  background: none;
+  border: 1px solid #d0d7de;
+  border-radius: 4px;
+  padding: 0.25rem 0.7rem;
+  font-size: 0.82rem;
+  font-family: inherit;
+  cursor: pointer;
+  color: #1f2328;
+}
+
+.vhist-retry-btn:hover { background: #f0f1f3; }

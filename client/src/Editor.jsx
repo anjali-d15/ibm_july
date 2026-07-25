@@ -16,7 +16,7 @@ const AUTOSAVE_DEBOUNCE_MS = 500;
  *  - locked prop: disables editing while a fork is pending
  */
 const Editor = forwardRef(function Editor(
-  { docId, initialContent, segments, locked, onSelectionChange },
+  { docId, initialContent, segments, locked, onSelectionChange, onVersionHistory },
   ref
 ) {
   const [saveStatus, setSaveStatus] = useState('idle');
@@ -102,12 +102,8 @@ const Editor = forwardRef(function Editor(
           .join('')
       : '',
     onUpdate({ editor: ed, transaction }) {
-      // DEV TRACE — remove before P4
-      console.log('[onUpdate] isEditable=%s docChanged=%s steps=%d',
-        ed.isEditable, transaction.docChanged, transaction.steps.length);
-      if (!ed.isEditable) { console.log('[onUpdate] skipped — not editable'); return; }
-      if (!transaction.docChanged) { console.log('[onUpdate] skipped — no docChange'); return; }
-      console.log('[onUpdate] → scheduling save');
+      if (!ed.isEditable) return;
+      if (!transaction.docChanged) return;
       // Use doc.textBetween for plain-text character offsets — per spec
       const text = ed.state.doc.textBetween(0, ed.state.doc.content.size, '\n\n', '');
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
@@ -182,7 +178,14 @@ const Editor = forwardRef(function Editor(
     <div className={`editor-shell${locked ? ' editor-shell--locked' : ''}`}>
       <header className="editor-header">
         <span className="editor-title">Ledger</span>
-        <span className="save-status" style={{ color: statusColor }}>{statusLabel}</span>
+        <div className="editor-header__right">
+          {onVersionHistory && (
+            <button className="editor-nav-btn" onClick={onVersionHistory}>
+              Version history
+            </button>
+          )}
+          <span className="save-status" style={{ color: statusColor }}>{statusLabel}</span>
+        </div>
       </header>
       <main className="editor-main">
         <EditorContent editor={editor} className="editor-content" />
