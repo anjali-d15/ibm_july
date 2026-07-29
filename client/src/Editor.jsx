@@ -14,9 +14,11 @@ const AUTOSAVE_DEBOUNCE_MS = 500;
  *  - flushSave() exposed via ref for fork ops to call before generating
  *  - onSelectionChange(selectionInfo | null) callback for parent to wire into fork UI
  *  - locked prop: disables editing while a fork is pending
+ *  - focusMode: distraction-free fullscreen write mode
+ *  - telemetry: live latency/status badge from last AI call
  */
 const Editor = forwardRef(function Editor(
-  { docId, initialContent, segments, locked, onSelectionChange, onVersionHistory },
+  { docId, initialContent, segments, locked, onSelectionChange, focusMode, onToggleFocus },
   ref
 ) {
   const [saveStatus, setSaveStatus] = useState('idle');
@@ -48,15 +50,10 @@ const Editor = forwardRef(function Editor(
     [docId]
   );
 
-  /**
-   * flushSave — synchronously cancel the debounce timer and await any
-   * in-flight save. Fork operations must call this before proceeding.
-   */
   const flushSave = useCallback(async () => {
     if (saveTimerRef.current) {
       clearTimeout(saveTimerRef.current);
       saveTimerRef.current = null;
-      // If there's pending text that hasn't been saved yet, save it now
       if (editorRef.current) {
         const text = editorRef.current.state.doc.textBetween(
           0,
@@ -68,15 +65,9 @@ const Editor = forwardRef(function Editor(
         return;
       }
     }
-    // Wait for any already-in-flight save to complete
     if (pendingSaveRef.current) await pendingSaveRef.current;
   }, [persistContent]);
 
-  /**
-   * setContent — replaces the editor's content programmatically.
-   * Called by App after approve/reject to reflect the new resolved document.
-   * Uses doc.textBetween-compatible paragraph structure, same as initial load.
-   */
   const setContent = useCallback((text) => {
     if (!editorRef.current) return;
     const html = text
@@ -91,6 +82,7 @@ const Editor = forwardRef(function Editor(
   // Tiptap editor
   // ---------------------------------------------------------------------------
   const editorRef = useRef(null);
+  const shellRef = useRef(null);
 
   const editor = useEditor({
     extensions: [Document, Paragraph, Text, History],
@@ -104,7 +96,6 @@ const Editor = forwardRef(function Editor(
     onUpdate({ editor: ed, transaction }) {
       if (!ed.isEditable) return;
       if (!transaction.docChanged) return;
-      // Use doc.textBetween for plain-text character offsets — per spec
       const text = ed.state.doc.textBetween(0, ed.state.doc.content.size, '\n\n', '');
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
       saveTimerRef.current = setTimeout(() => persistContent(text), AUTOSAVE_DEBOUNCE_MS);
@@ -116,14 +107,9 @@ const Editor = forwardRef(function Editor(
         onSelectionChange(null);
         return;
       }
-      // Extract plain-text offsets using doc.textBetween
-      const docSize = ed.state.doc.content.size;
-      // textBetween(0, pos) gives us the plain-text offset at `pos`
       const textBefore = ed.state.doc.textBetween(0, Math.max(0, from - 1), '\n\n', '');
       const textSelected = ed.state.doc.textBetween(from, to, '\n\n', '');
 
-      // Approximate plain-text start/end offsets
-      // We walk the resolved segments to find which segment owns this selection
       const plainStart = textBefore.length;
       const plainEnd = plainStart + textSelected.length;
 
@@ -132,17 +118,19 @@ const Editor = forwardRef(function Editor(
         return;
       }
 
-      // Find the owning segment (must be fully within one segment)
       const owning = segments.find((s) => plainStart >= s.start && plainEnd <= s.end);
       if (!owning) {
-        // Cross-segment selection
         onSelectionChange({ crossSegment: true, plainStart, plainEnd });
         return;
       }
 
-      // Offsets relative to the segment's coordinate space
-      const anchorStart = plainStart - owning.start + owning.start;
-      const anchorEnd = plainEnd - owning.start + owning.start;
+      let selectionRect = null;
+      try {
+        const nativeSel = window.getSelection();
+        if (nativeSel && nativeSel.rangeCount > 0) {
+          selectionRect = nativeSel.getRangeAt(0).getBoundingClientRect();
+        }
+      } catch (_) { /* ignore — non-critical */ }
 
       onSelectionChange({
         crossSegment: false,
@@ -150,6 +138,7 @@ const Editor = forwardRef(function Editor(
         anchor_start: plainStart,
         anchor_end: plainEnd,
         selected_text: textSelected,
+        selectionRect,
       });
     },
   });
@@ -171,24 +160,62 @@ const Editor = forwardRef(function Editor(
     };
   }, []);
 
+  // Escape key exits focus mode
+  useEffect(() => {
+    if (!focusMode) return;
+    function handleKeyDown(e) {
+      if (e.key === 'Escape' && onToggleFocus) onToggleFocus();
+    }
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [focusMode, onToggleFocus]);
+
   const statusLabel = { idle: '', saving: 'Saving…', saved: 'Saved', error: 'Save failed' }[saveStatus];
-  const statusColor = { idle: 'transparent', saving: '#57606a', saved: '#2da44e', error: '#c0392b' }[saveStatus];
+  const statusColor = { idle: 'transparent', saving: '#8b93a1', saved: '#2da44e', error: '#c0392b' }[saveStatus];
 
   return (
-    <div className={`editor-shell${locked ? ' editor-shell--locked' : ''}`}>
-      <header className="editor-header">
-        <span className="editor-title">Ledger</span>
-        <div className="editor-header__right">
-          {onVersionHistory && (
-            <button className="editor-nav-btn" onClick={onVersionHistory}>
-              Version history
-            </button>
-          )}
+    <div ref={shellRef} className={`editor-shell${locked ? ' editor-shell--locked' : ''}${focusMode ? ' editor-shell--focus' : ''}`}>
+      {/* Focus mode: show a minimal bar with save status and exit button */}
+      {focusMode && (
+        <header className="editor-header editor-header--focus-only">
+          <div className="editor-header__left">
+            <div className="editor-brand">
+              <svg className="editor-brand__icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path d="M3 6 C6 6, 7 10, 10 10 C13 10, 14 6, 17 6 C20 6, 21 10, 21 10"
+                  stroke="#5b5bd6" strokeWidth="1.8" strokeLinecap="round" fill="none" />
+                <path d="M3 12 C5 12, 8 8, 12 12 C16 16, 19 12, 21 12"
+                  stroke="#7c5cd8" strokeWidth="1.8" strokeLinecap="round" fill="none" />
+                <path d="M3 18 C6 18, 7 14, 10 14 C13 14, 14 18, 17 18 C20 18, 21 14, 21 14"
+                  stroke="#3b82d4" strokeWidth="1.8" strokeLinecap="round" fill="none" />
+              </svg>
+              <span className="editor-title">Throughline</span>
+            </div>
+          </div>
+          <div className="editor-header__right">
+            <span className="save-status" style={{ color: statusColor }}>{statusLabel}</span>
+            {onToggleFocus && (
+              <button
+                className="focus-mode-btn"
+                onClick={onToggleFocus}
+                title="Exit Focus Mode (Esc)"
+                aria-pressed={true}
+              >
+                ⊡ Exit Focus
+              </button>
+            )}
+          </div>
+        </header>
+      )}
+      {/* Non-focus mode: show save status as a subtle floating indicator */}
+      {!focusMode && (
+        <div className="editor-save-indicator" aria-live="polite">
           <span className="save-status" style={{ color: statusColor }}>{statusLabel}</span>
         </div>
-      </header>
+      )}
       <main className="editor-main">
-        <EditorContent editor={editor} className="editor-content" />
+        <div className="editor-paper">
+          <EditorContent editor={editor} className="editor-content" />
+        </div>
       </main>
     </div>
   );

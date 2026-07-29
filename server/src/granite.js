@@ -99,7 +99,12 @@ async function callChat(messages, maxNewTokens) {
 // ---------------------------------------------------------------------------
 
 const ALTERNATIVE_SYSTEM = [
-  'You are a precise creative writing assistant.',
+  'You are a Narrative Architect — a master story co-author and dramatic analyst.',
+  'Before rewriting, you silently analyze: character motivations and psychological states,',
+  'underlying tensions and power dynamics, plot causality and dramatic stakes,',
+  'and the potential for dramatic shifts (character decisions, alternate fates, plot twists, subversion of expectations).',
+  'You handle both structural narrative changes (character choices, plot outcomes, fates, twists)',
+  'and stylistic/tonal rewrites with equal authority.',
   'You always respond with valid JSON only — no prose, no markdown, no explanation outside the JSON.',
   'Your response must be a single JSON object with exactly this key: "alternative".',
   'The value of "alternative" is the rewritten passage text, as a plain string.',
@@ -107,22 +112,25 @@ const ALTERNATIVE_SYSTEM = [
 
 /**
  * Build the user message for alternative generation.
+ * Acts as a Narrative Architect: analyzes character motivations, underlying tensions,
+ * plot causality, and dramatic stakes before crafting the alternative.
  * @param {string} selectedText
  * @param {string|undefined} instruction
  * @returns {string}
  */
 function buildPrompt(selectedText, instruction) {
   const directive = instruction && instruction.trim()
-    ? `Rewrite the following passage so that it ${instruction.trim()}.`
-    : `Write an alternative version of the following passage that preserves its general tone and intent.`;
+    ? `Creative direction: "${instruction.trim()}". Consider the character motivations, dramatic stakes, and plot causality present in the passage. You may alter character choices, fates, plot outcomes, introduce twists, or subvert expectations as needed.`
+    : `Analyze the character motivations, tensions, and dramatic stakes in this passage, then write an alternative narrative path that explores a meaningfully different plot direction, character decision, or dramatic outcome.`;
 
   return (
     `Your response must be a JSON object with exactly this structure:\n` +
     `{"alternative": "<your rewritten passage here>"}\n\n` +
     `Example of a correct response:\n` +
     `{"alternative": "She arrived at noon, just as the clock struck twelve."}\n\n` +
+    `Original passage:\n${selectedText}\n\n` +
     `${directive}\n\n` +
-    `Passage to rewrite:\n${selectedText}`
+    `Do not write preamble or explanations. Return only the JSON object.`
   );
 }
 
@@ -154,10 +162,31 @@ async function generateAlternative(selectedText, instruction) {
   try {
     parsed = JSON.parse(rawText.trim());
   } catch {
-    throw new Error(`Granite response is not valid JSON: ${rawText.slice(0, 200)}`);
+    // Defensive fallback: try extracting JSON object with regex, then plain text
+    const jsonMatch = rawText.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      try { parsed = JSON.parse(jsonMatch[0]); } catch { /* fall through */ }
+    }
+    if (!parsed) {
+      // Last resort: use the raw text as the alternative itself
+      const text = rawText.trim();
+      if (text) {
+        const result = text.slice(0, 8000);
+        devCacheSet(cacheKey, result);
+        return result;
+      }
+      throw new Error(`Granite response is not valid JSON: ${rawText.slice(0, 200)}`);
+    }
   }
 
   if (typeof parsed.alternative !== 'string' || parsed.alternative.trim() === '') {
+    // Defensive fallback: check for common field variants
+    const alt = parsed.alternative ?? parsed.text ?? parsed.result ?? parsed.content;
+    if (typeof alt === 'string' && alt.trim()) {
+      const result = alt.trim().slice(0, 8000);
+      devCacheSet(cacheKey, result);
+      return result;
+    }
     throw new Error(`Granite response missing "alternative" field: ${rawText.slice(0, 200)}`);
   }
 
@@ -223,10 +252,28 @@ async function draftWhySummary(originalSnippet, branchContent) {
   try {
     parsed = JSON.parse(rawText.trim());
   } catch {
-    throw new Error(`Granite why-summary response is not valid JSON: ${rawText.slice(0, 200)}`);
+    const jsonMatch = rawText.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      try { parsed = JSON.parse(jsonMatch[0]); } catch { /* fall through */ }
+    }
+    if (!parsed) {
+      const text = rawText.trim();
+      if (text) {
+        const result = text.slice(0, 2000);
+        devCacheSet(cacheKey, result);
+        return result;
+      }
+      throw new Error(`Granite why-summary response is not valid JSON: ${rawText.slice(0, 200)}`);
+    }
   }
 
   if (typeof parsed.why !== 'string' || parsed.why.trim() === '') {
+    const why = parsed.why ?? parsed.text ?? parsed.result ?? parsed.rationale;
+    if (typeof why === 'string' && why.trim()) {
+      const result = why.trim().slice(0, 2000);
+      devCacheSet(cacheKey, result);
+      return result;
+    }
     throw new Error(`Granite why-summary response missing "why" field: ${rawText.slice(0, 200)}`);
   }
 

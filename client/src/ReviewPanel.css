@@ -1,74 +1,93 @@
+/* ReviewPanel — fork review with visual diff styling */
+
 .review-panel {
   background: #ffffff;
-  border: 1px solid #e5e7eb;
-  border-radius: 6px;
+  border: 1px solid #e2e5ea;
+  border-radius: 14px;
   padding: 1.25rem 1.5rem;
   max-width: 720px;
   margin: 0 auto 1.5rem;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.06);
 }
 
 .review-panel__heading {
-  font-size: 0.75rem;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: #57606a;
-  margin: 0 0 1rem 0;
-}
-
-.review-panel__columns {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 1rem;
-  margin-bottom: 1rem;
-}
-
-@media (max-width: 600px) {
-  .review-panel__columns {
-    grid-template-columns: 1fr;
-  }
-}
-
-.review-panel__col {
-  display: flex;
-  flex-direction: column;
-  gap: 0.4rem;
-}
-
-.review-panel__col-label {
   font-size: 0.72rem;
   font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.06em;
+  color: #57606a;
+  margin: 0 0 0.9rem 0;
 }
 
-.review-panel__col--original .review-panel__col-label { color: #57606a; }
-.review-panel__col--alternative .review-panel__col-label { color: #3b82d4; }
+/* ── Diff blocks ─────────────────────────────────────────────── */
+.review-panel__diff {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+  margin-bottom: 1rem;
+}
 
-.review-panel__text {
-  padding: 0.6rem 0.75rem;
-  border-radius: 4px;
-  font-size: 0.95rem;
-  line-height: 1.6;
+.review-panel__diff-block {
+  border-radius: 0 10px 10px 0;
+  padding: 0.7rem 0.9rem;
+  border-left-width: 4px;
+  border-left-style: solid;
+}
+
+/* Original — rose */
+.review-panel__diff-block--original {
+  background: #fff1f2;
+  border-left-color: #fb7185;
+}
+
+.review-panel__diff-block--original .review-panel__diff-label {
+  color: #9f1239;
+}
+
+.review-panel__diff-block--original .review-panel__diff-text {
+  color: #881337;
+  text-decoration: line-through;
+  text-decoration-color: #fda4af;
+}
+
+/* Alternative — emerald */
+.review-panel__diff-block--alternative {
+  background: #f0fdf4;
+  border-left-color: #10b981;
+}
+
+.review-panel__diff-block--alternative .review-panel__diff-label {
+  color: #065f46;
+}
+
+.review-panel__diff-block--alternative .review-panel__diff-text {
+  color: #064e3b;
+  font-weight: 500;
+}
+
+/* Shared label + text */
+.review-panel__diff-label {
+  display: block;
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  margin-bottom: 0.35rem;
+}
+
+.review-panel__diff-text {
+  font-family: 'Lora', Georgia, serif;
+  font-size: 0.9rem;
+  line-height: 1.65;
   word-break: break-word;
   white-space: pre-wrap;
+  margin: 0;
 }
 
-.review-panel__col--original .review-panel__text {
-  background: #f7f8fa;
-  border: 1px solid #e5e7eb;
-  color: #57606a;
-}
-
-.review-panel__col--alternative .review-panel__text {
-  background: #eef4fd;
-  border: 1px solid #c5d9f7;
-  color: #1f2328;
-}
-
+/* ── Footer ──────────────────────────────────────────────────── */
 .review-panel__error {
-  color: #c0392b;
-  font-size: 0.85rem;
+  color: #b91c1c;
+  font-size: 0.84rem;
   margin: 0 0 0.75rem;
 }
 

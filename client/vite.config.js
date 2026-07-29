@@ -6,8 +6,10 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
+      '/auth':     'http://localhost:3001',
+      '/documents': 'http://localhost:3001',
       '/document': 'http://localhost:3001',
-      '/fork': 'http://localhost:3001',
+      '/fork':     'http://localhost:3001',
     },
   },
 });

@@ -1,0 +1,99 @@
+/* SelectionToolbar — floating mini-toolbar above highlighted text */
+
+.sel-toolbar {
+  position: absolute;          /* inside .app which is position:relative */
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  background: #1c1f26;
+  border: 1px solid #2e3340;
+  border-radius: 12px;
+  padding: 5px 6px;
+  box-shadow:
+    0 4px 16px rgba(0, 0, 0, 0.28),
+    0 1px 4px rgba(0, 0, 0, 0.18);
+  white-space: nowrap;
+  min-width: 260px;
+
+  /* Sit above the selection — transform lifts it by its own height */
+  transform: translateY(-100%);
+
+  /* Entrance animation — invisible + scaled-down initially */
+  opacity: 0;
+  scale: 0.92;
+  transition:
+    opacity 0.14s ease,
+    scale   0.14s cubic-bezier(0.34, 1.56, 0.64, 1);
+  pointer-events: none;   /* no interaction until visible */
+}
+
+/* Animate-in state */
+.sel-toolbar--visible {
+  opacity: 1;
+  scale: 1;
+  pointer-events: auto;
+}
+
+/* Arrow / caret pointing down toward the selection */
+.sel-toolbar::after {
+  content: '';
+  position: absolute;
+  bottom: -6px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 10px;
+  height: 6px;
+  background: #1c1f26;
+  clip-path: polygon(0 0, 100% 0, 50% 100%);
+}
+
+/* Individual action buttons */
+.sel-toolbar__btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  padding: 0.3rem 0.65rem;
+  font-family: 'Plus Jakarta Sans', -apple-system, sans-serif;
+  font-size: 0.78rem;
+  font-weight: 500;
+  color: #cdd0d8;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s, color 0.12s, transform 0.1s;
+  white-space: nowrap;
+  line-height: 1.4;
+}
+
+.sel-toolbar__btn:hover {
+  background: #2c3040;
+  border-color: #3d4257;
+  color: #ffffff;
+}
+
+.sel-toolbar__btn:active {
+  transform: scale(0.95);
+}
+
+/* Give each button a subtle accent on hover based on its action */
+.sel-toolbar__btn:nth-child(1):hover { border-color: #7c7cf0; color: #b8b8ff; }
+.sel-toolbar__btn:nth-child(2):hover { border-color: #60b4f5; color: #93d4ff; }
+.sel-toolbar__btn:nth-child(3):hover { border-color: #c084fc; color: #e0b4ff; }
+
+.sel-toolbar__icon {
+  font-size: 0.85rem;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.sel-toolbar__label {
+  /* hide label on very narrow screens if needed */
+}
+
+/* Thin vertical dividers between buttons */
+.sel-toolbar__btn + .sel-toolbar__btn {
+  border-left: 1px solid #2e3340;
+  border-left-color: transparent; /* use gap + hover border instead */
+}

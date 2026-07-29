@@ -1,244 +1,49 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
+import NodeDetail from './NodeDetail.jsx';
 import './TreeView.css';
 
-const CARD_W        = 200;   // card width px
-const CARD_H        = 120;   // card height px
-const H_GAP         = 28;    // horizontal gap between sibling cards within a cluster
-const V_GAP         = 110;   // vertical gap between rows (card bottom → child card top)
-const ROW_H         = CARD_H + V_GAP;
-const CLUSTER_GAP   = 96;    // extra horizontal gap between independent decision clusters
-const CANVAS_PAD    = 60;    // horizontal padding on each side of the canvas
-const SEQ_Y_OFFSET  = CARD_H / 2;  // sequence line pierces cluster roots at their vertical midpoint
-
 /**
- * TreeView — version-history view.
+ * TreeView — decision-tree with two display modes:
  *
- * Layout model (updated):
- *  Each distinct decision point (unique anchor_start/anchor_end with
- *  parent_fork_id=null) is an independent CLUSTER:
- *
- *    [ Original ]          [ Original ]          [ Original ]
- *         |                     |                     |
- *    ┌────┴────┐           ┌────┘           ┌────┬────┐
- *  [Alt A] [Alt B]       [Alt C]          [Alt] [Alt] ...
- *     |
- *  [Alt A.1] ...   ← true child forks nest vertically within their cluster
- *
- *  Clusters are ordered left-to-right by anchor_start.
- *  Each cluster gets its own "Original" card showing original_snippet.
- *  Intra-cluster gaps use H_GAP; inter-cluster gaps use CLUSTER_GAP.
+ *   🌳 Visual Tree — bipartite SVG diagram: root(s) LEFT, branches RIGHT,
+ *                    bezier curves connecting them, click to switch/inspect
+ *   📋 Detailed List — vertical comparison cards (original vs alt + why)
  *
  * Props:
  *   docId              string
- *   onBackToEditor()   "Back to editor" click
- *   onSwitch()         after branch switch — re-fetches /resolved
- *   onCheckConsistency()
+ *   onSwitch(forkId)   — called after a successful branch switch
+ *   activeBranchId     — externally-set highlighted branch (from sidebar click)
  */
-export default function TreeView({ docId, onBackToEditor, onSwitch, onCheckConsistency }) {
-  const [forks, setForks]           = useState(null);
-  const [loadError, setLoadError]   = useState(null);
-  const [selectedId, setSelectedId] = useState(null);
-  const [switching, setSwitching]   = useState(null);
-  const [whyState, setWhyState]     = useState('idle');
-  const [whyError, setWhyError]     = useState(null);
-  const canvasRef = useRef(null);
+export default function TreeView({ docId, onSwitch, activeBranchId: externalActiveBranchId }) {
+  const [forks, setForks]                       = useState(null);
+  const [loadError, setLoadError]               = useState(null);
+  const [selectedId, setSelectedId]             = useState(null);
+  const [switching, setSwitching]               = useState(null);
+  const [viewMode, setViewMode]                 = useState('visual'); // 'visual' | 'list'
+  const [activeBranchId, setActiveBranchId]     = useState(externalActiveBranchId ?? null);
+  const [svgSize, setSvgSize]                   = useState({ w: 0, h: 0 });
+  const wrapperRef                              = useRef(null);
+
+  // Sync external prop into local state when it changes
+  useEffect(() => {
+    if (externalActiveBranchId != null) setActiveBranchId(externalActiveBranchId);
+  }, [externalActiveBranchId]);
 
   const fetchTree = useCallback(() => {
-    setLoadError(null);
     fetch(`/document/${docId}/tree`)
-      .then((r) => { if (!r.ok) throw new Error(`${r.status}`); return r.json(); })
+      .then((r) => {
+        if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+        return r.json();
+      })
       .then(({ forks }) => setForks(forks))
       .catch((err) => setLoadError(err.message));
   }, [docId]);
 
   useEffect(() => { fetchTree(); }, [fetchTree]);
 
-  // ---------------------------------------------------------------------------
-  // buildGroups — group siblings by (anchor_start, anchor_end) at a given level
-  //
-  // Returns array of SiblingGroup, each SiblingGroup = ForkNode[]
-  // ForkNode = fork row + { childGroups: SiblingGroup[] }
-  //
-  // Called recursively: buildGroups(allForks, someForkId) finds true children
-  // of that fork and groups their siblings the same way.
-  // ---------------------------------------------------------------------------
-  function buildGroups(allForks, parentForkId) {
-    const children = allForks.filter(
-      (f) => (f.parent_fork_id ?? null) === (parentForkId ?? null)
-    );
-    if (children.length === 0) return [];
-
-    const anchorMap = new Map();
-    for (const f of children) {
-      const key = `${f.anchor_start}-${f.anchor_end}`;
-      if (!anchorMap.has(key)) anchorMap.set(key, []);
-      anchorMap.get(key).push(f);
-    }
-
-    const groups = [];
-    for (const [, siblings] of anchorMap) {
-      // Active sibling first, then by creation time
-      siblings.sort((a, b) => {
-        if (a.is_active !== b.is_active) return b.is_active - a.is_active;
-        return new Date(a.created_at) - new Date(b.created_at);
-      });
-      groups.push(
-        siblings.map((f) => ({ ...f, childGroups: buildGroups(allForks, f.id) }))
-      );
-    }
-    // Document order: left-to-right by anchor_start
-    groups.sort((a, b) => (a[0]?.anchor_start ?? 0) - (b[0]?.anchor_start ?? 0));
-    return groups;
-  }
-
-  // ---------------------------------------------------------------------------
-  // computeLayout — produce the node/edge lists for the SVG canvas.
-  //
-  // Top-level design: each SiblingGroup from buildGroups(allForks, null) is an
-  // independent CLUSTER.  Each cluster has:
-  //   • One synthetic "cluster root" node (isClusterRoot=true) at depth 0
-  //     showing the original_snippet that was forked.
-  //   • Its alternatives (and their descendants) at depth ≥ 1 below it.
-  //
-  // Clusters are placed side-by-side, separated by CLUSTER_GAP.
-  // Within a cluster, siblings share H_GAP.
-  //
-  // Returns { nodes, edges, totalW, totalH }
-  // ---------------------------------------------------------------------------
-  function computeLayout(allForks) {
-    if (!allForks || allForks.length === 0) {
-      return { nodes: [], edges: [], seqLine: [], totalW: 0, totalH: 0 };
-    }
-
-    // ── Pass 1: subtree pixel width for a single ForkNode ──────────────────
-    // (how wide the subtree rooted at this fork needs to be)
-    function subtreeWidth(forkNode) {
-      if (forkNode.childGroups.length === 0) return CARD_W;
-      // Each childGroup is laid out side-by-side; groups are separated by H_GAP
-      const groupWidths = forkNode.childGroups.map((group) => {
-        const sibWidths = group.map(subtreeWidth);
-        return sibWidths.reduce((s, w) => s + w, 0) + (group.length - 1) * H_GAP;
-      });
-      const total = groupWidths.reduce((s, w) => s + w + H_GAP, -H_GAP);
-      return Math.max(CARD_W, total);
-    }
-
-    // ── Cluster width: the original card + the span of its children ────────
-    // A cluster = one top-level SiblingGroup (array of sibling ForkNodes all
-    // sharing the same anchor_start/anchor_end).
-    // The cluster root card sits above them; the cluster width = max(CARD_W,
-    // width of all siblings side-by-side).
-    function clusterWidth(siblingGroup) {
-      const sibWidths = siblingGroup.map(subtreeWidth);
-      const siblingsTotal = sibWidths.reduce((s, w) => s + w, 0) + (siblingGroup.length - 1) * H_GAP;
-      return Math.max(CARD_W, siblingsTotal);
-    }
-
-    const rootGroups = buildGroups(allForks, null); // array of SiblingGroup
-
-    // Sort clusters by anchor_start (already done inside buildGroups, but be explicit)
-    rootGroups.sort((a, b) => (a[0]?.anchor_start ?? 0) - (b[0]?.anchor_start ?? 0));
-
-    const clusterWidths = rootGroups.map(clusterWidth);
-    const totalClustersW = clusterWidths.reduce((s, w) => s + w, 0)
-      + (clusterWidths.length - 1) * CLUSTER_GAP;
-    const totalW = totalClustersW + CANVAS_PAD * 2;
-
-    const nodes = [];
-    const edges = [];
-
-    // ── Pass 2: place nodes ──────────────────────────────────────────────────
-    //
-    // placeSubtree recursively places one ForkNode and its descendants.
-    //   clusterLeft  — left edge of the column allocated to this subtree
-    //   subtreeW     — total pixel width allocated (= subtreeWidth(forkNode))
-    //   depth        — row index (0 = cluster root row, 1 = first child row, …)
-    //   parentCX/CY  — connector origin (centre-bottom of parent card)
-    //   parentIsActive — whether the parent is on the active path
-    function placeSubtree(forkNode, clusterLeft, sw, depth, parentCX, parentCY, parentIsActive) {
-      const nodeX = clusterLeft + (sw - CARD_W) / 2;
-      const nodeY = depth * ROW_H + 40;
-      const nodeCX = nodeX + CARD_W / 2;
-      const nodeCY = nodeY + CARD_H;
-      const isActive = !!forkNode.is_active;
-
-      nodes.push({ id: forkNode.id, x: nodeX, y: nodeY, fork: forkNode });
-      edges.push({
-        x1: parentCX, y1: parentCY,
-        x2: nodeCX,   y2: nodeY,
-        active: parentIsActive && isActive,
-      });
-
-      // Recurse into childGroups (anchor-groups within this fork's output)
-      if (forkNode.childGroups.length > 0) {
-        const groupWidths = forkNode.childGroups.map((group) => {
-          const sibWidths = group.map(subtreeWidth);
-          return sibWidths.reduce((s, w) => s + w, 0) + (group.length - 1) * H_GAP;
-        });
-        const childrenTotalW = groupWidths.reduce((s, w) => s + w + H_GAP, -H_GAP);
-        let childCursor = nodeCX - childrenTotalW / 2;
-
-        for (let gi = 0; gi < forkNode.childGroups.length; gi++) {
-          const group = forkNode.childGroups[gi];
-          const sibWidths = group.map(subtreeWidth);
-          let sibCursor = childCursor;
-          for (let si = 0; si < group.length; si++) {
-            const fw = sibWidths[si];
-            placeSubtree(group[si], sibCursor, fw, depth + 1, nodeCX, nodeCY, isActive);
-            sibCursor += fw + H_GAP;
-          }
-          childCursor += groupWidths[gi] + H_GAP;
-        }
-      }
-    }
-
-    // Place each cluster; also collect sequence-line anchor points
-    const seqLine = [];   // [{cx, y}] — one point per cluster, left to right
-    let clusterCursor = CANVAS_PAD;
-    for (let ci = 0; ci < rootGroups.length; ci++) {
-      const group     = rootGroups[ci];      // sibling ForkNodes at this anchor
-      const cw        = clusterWidths[ci];   // total pixel width of this cluster
-      const clusterCX = clusterCursor + cw / 2;  // centre of cluster
-
-      // ── Cluster root card (the "Original" node) ──
-      const rootX = clusterCursor + (cw - CARD_W) / 2;
-      const rootY = 40;
-      const rootCX = rootX + CARD_W / 2;
-      const rootCY = rootY + CARD_H;
-      nodes.push({
-        id:              `__cluster_${ci}__`,
-        x:               rootX,
-        y:               rootY,
-        fork:            null,
-        isClusterRoot:   true,
-        originalSnippet: group[0]?.original_snippet ?? '',
-        originalIsActive: group.every((fn) => !fn.is_active),
-      });
-
-      // Sequence line pierces the cluster root at its vertical midpoint
-      seqLine.push({ cx: rootCX, y: rootY + SEQ_Y_OFFSET });
-
-      // ── Place siblings below the cluster root ──
-      const sibWidths = group.map(subtreeWidth);
-      const siblingsW = sibWidths.reduce((s, w) => s + w, 0) + (group.length - 1) * H_GAP;
-      let sibCursor   = clusterCX - siblingsW / 2;
-
-      for (let si = 0; si < group.length; si++) {
-        const fw = sibWidths[si];
-        placeSubtree(group[si], sibCursor, fw, 1, rootCX, rootCY, true);
-        sibCursor += fw + H_GAP;
-      }
-
-      clusterCursor += cw + CLUSTER_GAP;
-    }
-
-    const maxY = nodes.reduce((m, n) => Math.max(m, n.y + CARD_H), 0);
-    return { nodes, edges, seqLine, totalW, totalH: maxY + 60 };
-  }
-
-  // ---------------------------------------------------------------------------
-  // Switch branch
-  // ---------------------------------------------------------------------------
+  // -------------------------------------------------------------------------
+  // Branch switch
+  // -------------------------------------------------------------------------
   async function handleSwitch(forkId) {
     setSwitching(forkId);
     try {
@@ -254,361 +59,405 @@ export default function TreeView({ docId, onBackToEditor, onSwitch, onCheckConsi
     }
   }
 
-  // ---------------------------------------------------------------------------
-  // Generate why
-  // ---------------------------------------------------------------------------
-  async function handleGenerateWhy(forkId) {
-    setWhyState('generating');
-    setWhyError(null);
-    try {
-      const res = await fetch(`/fork/${forkId}/why`, { method: 'POST', credentials: 'include' });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || `${res.status}`);
-      const newWhy = data.fork?.why ?? null;
-      setForks((prev) => prev.map((f) => (f.id === forkId ? { ...f, why: newWhy } : f)));
-      setWhyState('idle');
-    } catch (err) {
-      setWhyError(err.message);
-      setWhyState('generating_error');
-    }
+  // -------------------------------------------------------------------------
+  // Status helpers
+  // -------------------------------------------------------------------------
+  function statusLabel(fork) {
+    if (fork.status === 'proposed') return 'pending';
+    if (fork.status === 'failed')   return 'failed';
+    if (fork.status === 'resolved' && fork.is_active)  return 'active';
+    if (fork.status === 'resolved' && !fork.is_active) return 'inactive';
+    return fork.status;
   }
 
-  // ---------------------------------------------------------------------------
-  // Stats + active leaf
-  // ---------------------------------------------------------------------------
-  const totalVersions = forks ? forks.filter((f) => f.status === 'resolved').length : 0;
-  const withoutReason = forks ? forks.filter((f) => f.status === 'resolved' && f.is_active && !f.why).length : 0;
+  const STATUS_COLOR = {
+    active:   '#059669',
+    inactive: '#8b93a1',
+    failed:   '#dc2626',
+    pending:  '#d97706',
+  };
 
-  // The "Current" badge goes on the deepest active-path leaf —
-  // the one is_active fork that has no is_active child.
-  const activeLeafId = forks
-    ? (() => {
-        const activeIds = new Set(forks.filter((f) => f.is_active).map((f) => f.id));
-        const activeWithActiveChild = new Set(
-          forks
-            .filter((f) => f.is_active && f.parent_fork_id && activeIds.has(f.parent_fork_id))
-            .map((f) => f.parent_fork_id)
-        );
-        const leaves = forks.filter((f) => f.is_active && !activeWithActiveChild.has(f.id));
-        leaves.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-        return leaves[0]?.id ?? null;
-      })()
-    : null;
+  const STATUS_BG = {
+    active:   '#ecfdf5',
+    inactive: '#f4f5f7',
+    failed:   '#fef2f2',
+    pending:  '#fffbeb',
+  };
 
-  // ---------------------------------------------------------------------------
-  // Render
-  // ---------------------------------------------------------------------------
-  const selectedFork = forks && selectedId
-    ? forks.find((f) => f.id === selectedId) ?? null
-    : null;
+  const STATUS_BORDER = {
+    active:   '#a7f3d0',
+    inactive: '#dde0e8',
+    failed:   '#fca5a5',
+    pending:  '#fcd34d',
+  };
 
-  if (loadError) {
-    return (
-      <div className="vhist-shell">
-        <VHistHeader onBack={onBackToEditor} onCheckConsistency={onCheckConsistency}
-          totalVersions={0} withoutReason={0} isLocked={false} />
-        <div className="vhist-error">
-          Failed to load tree: {loadError}
-          <button className="vhist-retry-btn" onClick={fetchTree}>Retry</button>
-        </div>
-      </div>
-    );
-  }
+  // -------------------------------------------------------------------------
+  // Visual Tree — bipartite 2-column SVG layout
+  //
+  // Layout:  [Root/Trunk node]  ──bezier──>  [Branch nodes stacked vertically]
+  //
+  // For documents with only top-level forks (no parent_fork_id) we treat them
+  // all as branch nodes hanging off a synthetic "Original Manuscript" root.
+  // For documents that have a proper parent/child tree we use the real tree.
+  // -------------------------------------------------------------------------
+  function renderVisualTree(forks) {
+    if (!forks || forks.length === 0) return null;
 
-  if (!forks) {
-    return (
-      <div className="vhist-shell">
-        <VHistHeader onBack={onBackToEditor} onCheckConsistency={onCheckConsistency}
-          totalVersions={0} withoutReason={0} isLocked={false} />
-        <div className="vhist-loading">Loading…</div>
-      </div>
-    );
-  }
+    // --- Geometry constants ---
+    const ROOT_W   = 188;   // root card width
+    const ROOT_H   = 64;    // root card height
+    const NODE_W   = 210;   // branch card width
+    const NODE_H   = 60;    // branch card height
+    const V_GAP    = 18;    // vertical gap between branch cards
+    const H_SPAN   = 140;   // horizontal gap between columns
+    const PAD_TOP  = 24;
+    const PAD_LEFT = 24;
+    const PAD_RIGHT= 32;
 
-  if (forks.length === 0) {
-    return (
-      <div className="vhist-shell">
-        <VHistHeader onBack={onBackToEditor} onCheckConsistency={onCheckConsistency}
-          totalVersions={0} withoutReason={0} isLocked={false} />
-        <div className="vhist-empty">
-          No decision forks yet. Select text in the editor and click "Show alternative."
-        </div>
-      </div>
-    );
-  }
+    // Separate top-level forks (no parent) from child forks
+    const topLevel = forks.filter(f => !f.parent_fork_id);
+    const children  = forks.filter(f => !!f.parent_fork_id);
 
-  const { nodes, edges, seqLine, totalW, totalH } = computeLayout(forks);
-  const hasDetailPanel = !!selectedFork;
+    // Build groups: each top-level fork is a "root anchor" with its children
+    // If all forks are top-level we produce one synthetic root + all branches
+    const allTopLevel = children.length === 0;
 
-  return (
-    <div className={`vhist-shell${hasDetailPanel ? ' vhist-shell--panel-open' : ''}`}>
-      <VHistHeader
-        onBack={onBackToEditor}
-        onCheckConsistency={onCheckConsistency}
-        totalVersions={totalVersions}
-        withoutReason={withoutReason}
-        isLocked={false}
-      />
+    // We always render a synthetic "Original" root node on the left
+    // and all top-level forks as branches on the right.
+    // Child forks are rendered as sub-branches indented further right.
 
-      <div className="vhist-body">
-        <div className="vhist-canvas-wrap" ref={canvasRef}>
-          <div className="vhist-canvas" style={{ width: totalW, minHeight: totalH }}>
+    // For simplicity: flatten into a 2-column view.
+    // Column 0 (x=PAD_LEFT): synthetic trunk
+    // Column 1 (x=PAD_LEFT + ROOT_W + H_SPAN): all forks stacked
+    const branchNodes = forks; // show every fork as a branch
 
-            {/* SVG layer: branch connectors + document-order sequence line */}
-            <svg className="vhist-svg" width={totalW} height={totalH} aria-hidden="false">
-              {/* ── Document-order sequence line ── */}
-              {seqLine.length >= 2 && (() => {
-                const pts = seqLine.map(p => `${p.cx},${p.y}`).join(' ');
-                const last = seqLine[seqLine.length - 1];
-                // Arrowhead marker definition
-                return (
-                  <>
-                    <defs>
-                      <marker id="seq-arrow" markerWidth="7" markerHeight="7"
-                        refX="6" refY="3.5" orient="auto">
-                        <path d="M0,0 L0,7 L7,3.5 z" className="vhist-seq-arrow" />
-                      </marker>
-                    </defs>
-                    <polyline
-                      points={pts}
-                      className="vhist-seq-line"
-                      markerEnd="url(#seq-arrow)"
-                    />
-                    {/* "document order" label — above the first cluster root, left-aligned */}
-                    <text
-                      x={seqLine[0].cx - CARD_W / 2}
-                      y={seqLine[0].y - 14}
-                      className="vhist-seq-label"
-                    >
-                      document order
-                    </text>
-                  </>
-                );
-              })()}
+    const totalBranchH = branchNodes.length * (NODE_H + V_GAP) - V_GAP;
+    const rootY        = PAD_TOP + Math.max(0, (totalBranchH - ROOT_H) / 2);
 
-              {/* ── Branch connectors ── */}
-              {edges.map((e, i) => {
-                const my1 = e.y1 + (e.y2 - e.y1) * 0.45;
-                const my2 = e.y2 - (e.y2 - e.y1) * 0.45;
-                const d = `M ${e.x1} ${e.y1} C ${e.x1} ${my1}, ${e.x2} ${my2}, ${e.x2} ${e.y2}`;
-                return (
-                  <path key={i} d={d}
-                    className={e.active ? 'vhist-edge vhist-edge--active' : 'vhist-edge vhist-edge--inactive'} />
-                );
-              })}
-            </svg>
+    // SVG canvas dimensions
+    const svgW = PAD_LEFT + ROOT_W + H_SPAN + NODE_W + PAD_RIGHT;
+    const svgH = PAD_TOP + totalBranchH + PAD_TOP;
 
-            {/* Cards */}
-            {nodes.map((n) => {
-              // ── Cluster root ("Original" card) ──────────────────────────
-              if (n.isClusterRoot) {
-                return (
-                  <div
-                    key={n.id}
-                    className={`vhist-card vhist-card--root${n.originalIsActive ? ' vhist-card--root-active' : ''}`}
-                    style={{ left: n.x, top: n.y, width: CARD_W }}
-                    title="Original passage"
-                  >
-                    <div className="vhist-card__label">
-                      Original{n.originalIsActive ? ' — kept' : ''}
-                    </div>
-                    <div className="vhist-card__snippet vhist-card__snippet--root">
-                      {n.originalSnippet
-                        ? n.originalSnippet.slice(0, 90) + (n.originalSnippet.length > 90 ? '…' : '')
-                        : '—'}
-                    </div>
-                  </div>
-                );
-              }
+    // Root anchor point (right edge mid)
+    const rootX    = PAD_LEFT;
+    const rootMidX = rootX + ROOT_W;
+    const rootMidY = rootY + ROOT_H / 2;
 
-              // ── Fork card ────────────────────────────────────────────────
-              const fork     = n.fork;
-              const isCurrent  = fork.id === activeLeafId;
-              const isOnPath   = !!fork.is_active && !isCurrent;
-              const isFailed   = fork.status === 'failed';
-              const isPending  = fork.status === 'proposed';
-              const isInactive = !fork.is_active && !isFailed && !isPending;
-              const isSelected = selectedId === fork.id;
+    // Branch column X
+    const branchX  = PAD_LEFT + ROOT_W + H_SPAN;
 
-              return (
-                <div
-                  key={fork.id}
-                  className={[
-                    'vhist-card',
-                    isCurrent  ? 'vhist-card--current'  : '',
-                    isOnPath   ? 'vhist-card--on-path'  : '',
-                    isFailed   ? 'vhist-card--failed'   : '',
-                    isPending  ? 'vhist-card--pending'  : '',
-                    isInactive ? 'vhist-card--inactive' : '',
-                    isSelected ? 'vhist-card--selected' : '',
-                  ].filter(Boolean).join(' ')}
-                  style={{ left: n.x, top: n.y, width: CARD_W }}
-                  onClick={() => setSelectedId(isSelected ? null : fork.id)}
-                  role="button"
-                  tabIndex={0}
-                  onKeyDown={(e) => e.key === 'Enter' && setSelectedId(isSelected ? null : fork.id)}
-                  aria-pressed={isSelected}
-                >
-                  <div className="vhist-card__header">
-                    <span className="vhist-card__label">
-                      {isCurrent ? 'Current version' :
-                       isOnPath  ? 'Active branch'   :
-                       isFailed  ? 'Failed'           :
-                       isPending ? 'Pending'          : 'Alternative'}
-                    </span>
-                    {isCurrent && <span className="vhist-card__badge">Current</span>}
-                  </div>
-                  <div className="vhist-card__snippet">
-                    {fork.branch_content
-                      ? fork.branch_content.slice(0, 90) + (fork.branch_content.length > 90 ? '…' : '')
-                      : fork.original_snippet?.slice(0, 90) ?? ''}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
+    // Build branch positions
+    const branchPositions = branchNodes.map((fork, i) => ({
+      fork,
+      x: branchX,
+      y: PAD_TOP + i * (NODE_H + V_GAP),
+    }));
 
-        {/* Right-side detail panel */}
-        {selectedFork && (
-          <DetailPanel
-            fork={selectedFork}
-            activeLeafId={activeLeafId}
-            onClose={() => setSelectedId(null)}
-            onSwitch={handleSwitch}
-            switching={switching === selectedFork.id}
-            onGenerateWhy={handleGenerateWhy}
-            whyState={whyState}
-            whyError={whyError}
-          />
-        )}
-      </div>
-    </div>
-  );
-}
+    // ---- Render edges ----
+    const edges = branchPositions.map(({ fork, x, y }) => {
+      const isActive = fork.is_active;
+      const isHighlit = activeBranchId === fork.id;
+      const midY = y + NODE_H / 2;
+      // Bezier: start at root right-edge, curve to branch left-edge
+      const x1 = rootMidX;
+      const y1 = rootMidY;
+      const x2 = x;
+      const y2 = midY;
+      const cx1 = x1 + (x2 - x1) * 0.5;
+      const cy1 = y1;
+      const cx2 = x1 + (x2 - x1) * 0.5;
+      const cy2 = y2;
 
-// ---------------------------------------------------------------------------
-// VHistHeader
-// ---------------------------------------------------------------------------
-function VHistHeader({ onBack, onCheckConsistency, totalVersions, withoutReason, isLocked }) {
-  return (
-    <header className="vhist-header">
-      <div className="vhist-header__left">
-        <button className="vhist-header__back" onClick={onBack}>
-          <span className="vhist-header__back-arrow">←</span>
-          Back to editor
-        </button>
-        <span className="vhist-header__divider" aria-hidden="true" />
-        <span className="vhist-header__title">
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"
-            style={{ marginRight: '0.35rem', verticalAlign: '-0.1em' }}>
-            <path d="M5 3.5a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0ZM3.5 5A1.5 1.5 0 1 0 3.5 8a1.5 1.5 0 0 0 0-3Zm0 0V5m0 0V3.5m9 0a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0Zm-1.5 0v6.5a2 2 0 0 1-2 2H6.5"
-              stroke="#1f2328" strokeWidth="1.5" strokeLinecap="round" />
-          </svg>
-          Version history
-        </span>
-      </div>
-      <div className="vhist-header__right">
-        {totalVersions > 0 && (
-          <span className="vhist-header__stats">
-            {totalVersions} version{totalVersions !== 1 ? 's' : ''}
-            {withoutReason > 0 && <> · {withoutReason} without reason</>}
-          </span>
-        )}
-        <button
-          className="vhist-header__consistency-btn"
-          onClick={onCheckConsistency}
-          disabled={isLocked}
+      return (
+        <path
+          key={`edge-${fork.id}`}
+          d={`M ${x1} ${y1} C ${cx1} ${cy1}, ${cx2} ${cy2}, ${x2} ${y2}`}
+          fill="none"
+          stroke={isHighlit ? '#6366F1' : isActive ? '#6366F1' : '#dde0e8'}
+          strokeWidth={isHighlit ? 2.5 : isActive ? 2 : 1.5}
+          strokeOpacity={isHighlit ? 1 : isActive ? 0.8 : 0.5}
+          strokeDasharray={isActive ? 'none' : '5 3'}
+        />
+      );
+    });
+
+    // ---- Render branch nodes ----
+    const nodeCards = branchPositions.map(({ fork, x, y }) => {
+      const label       = statusLabel(fork);
+      const isHighlit   = activeBranchId === fork.id;
+      const isSelected  = selectedId === fork.id;
+      const isSwitchable= fork.status === 'resolved' && !fork.is_active;
+      const color       = STATUS_COLOR[label] || '#57606a';
+      const bg          = STATUS_BG[label]    || '#f4f5f7';
+      const border      = STATUS_BORDER[label]|| '#dde0e8';
+      const snippet     = fork.original_snippet
+        ? fork.original_snippet.slice(0, 32) + (fork.original_snippet.length > 32 ? '…' : '')
+        : '(empty)';
+      const emphasized  = isHighlit || isSelected;
+
+      function handleClick() {
+        setSelectedId(emphasized && !isSwitchable ? null : fork.id);
+        setActiveBranchId(fork.id);
+        if (isSwitchable) handleSwitch(fork.id);
+      }
+
+      return (
+        <g
+          key={fork.id}
+          id={`branch-node-${fork.id}`}
+          transform={`translate(${x}, ${y})`}
+          onClick={handleClick}
+          onKeyDown={(e) => e.key === 'Enter' && handleClick()}
+          style={{ cursor: isSwitchable ? 'pointer' : 'default' }}
+          role="button"
+          tabIndex={0}
+          aria-label={isSwitchable ? `Switch to: ${snippet}` : `${label}: ${snippet}`}
+          aria-pressed={isSelected}
         >
-          ✓ Check consistency
-        </button>
-      </div>
-    </header>
-  );
-}
+          {/* Highlight ring */}
+          {emphasized && (
+            <rect
+              x={-3} y={-3}
+              width={NODE_W + 6} height={NODE_H + 6}
+              rx={12}
+              fill="none"
+              stroke="#6366F1"
+              strokeWidth="2.5"
+              opacity="0.75"
+            />
+          )}
 
-// ---------------------------------------------------------------------------
-// DetailPanel
-// ---------------------------------------------------------------------------
-function DetailPanel({ fork, activeLeafId, onClose, onSwitch, switching, onGenerateWhy, whyState, whyError }) {
-  const isCurrent = fork.id === activeLeafId;
-  const canSwitch = fork.status === 'resolved' && !fork.is_active;
+          {/* Card background */}
+          <rect
+            width={NODE_W}
+            height={NODE_H}
+            rx={10}
+            fill={switching === fork.id ? '#e0e7ff' : emphasized ? '#eef0fc' : bg}
+            stroke={switching === fork.id ? '#5b5bd6' : emphasized ? '#6366F1' : border}
+            strokeWidth={emphasized ? 1.5 : 1}
+          />
 
-  const label = isCurrent                  ? 'Current'       :
-                fork.is_active             ? 'Active branch' :
-                fork.status === 'failed'   ? 'Failed'        :
-                fork.status === 'proposed' ? 'Pending'       : 'Inactive';
+          {/* Status bar on left edge */}
+          <rect x={0} y={0} width={4} height={NODE_H} rx={2} fill={color} />
 
-  return (
-    <aside className="vhist-detail">
-      <div className="vhist-detail__header">
-        <div className="vhist-detail__header-left">
-          <span className="vhist-detail__title">
-            {isCurrent      ? 'Current version' :
-             fork.is_active ? 'Active branch'   : 'Alternative'}
-          </span>
-          <span className={`vhist-detail__badge vhist-detail__badge--${
-            isCurrent          ? 'current'  :
-            fork.is_active     ? 'on-path'  :
-            fork.status === 'failed'   ? 'failed'   :
-            fork.status === 'proposed' ? 'pending'  : 'inactive'
-          }`}>
+          {/* Status pill */}
+          <rect x={12} y={8} width={52} height={15} rx={4}
+            fill={bg} stroke={border} strokeWidth="1" />
+          <text x={38} y={17}
+            fontSize={8.5} fontFamily="'Plus Jakarta Sans', sans-serif"
+            fontWeight="700" fill={color}
+            textAnchor="middle" dominantBaseline="middle"
+            style={{ textTransform: 'uppercase', letterSpacing: '0.05em' }}
+          >
             {label}
-          </span>
-        </div>
-        <button className="vhist-detail__close" onClick={onClose} aria-label="Close detail">✕</button>
+          </text>
+
+          {/* Snippet text */}
+          <text x={12} y={40}
+            fontSize={10.5} fontFamily="'Plus Jakarta Sans', sans-serif"
+            fill="#1f2328"
+            textAnchor="start" dominantBaseline="middle"
+          >
+            {switching === fork.id ? 'Switching…' : snippet}
+          </text>
+
+          {/* Switch hint arrow */}
+          {isSwitchable && (
+            <text x={NODE_W - 10} y={NODE_H / 2}
+              fontSize={13} fontFamily="sans-serif"
+              fill="#6366F1" textAnchor="middle" dominantBaseline="middle"
+              opacity={0.8}
+            >
+              ↺
+            </text>
+          )}
+        </g>
+      );
+    });
+
+    // ---- Root/trunk node ----
+    const rootNode = (
+      <g key="root-trunk" transform={`translate(${rootX}, ${rootY})`}>
+        {/* Card */}
+        <rect
+          width={ROOT_W} height={ROOT_H} rx={12}
+          fill="#f0f0fb" stroke="#5b5bd6" strokeWidth="1.5"
+        />
+        {/* Left accent */}
+        <rect x={0} y={0} width={5} height={ROOT_H} rx={3} fill="#5b5bd6" />
+        {/* Label */}
+        <text x={ROOT_W / 2 + 3} y={ROOT_H / 2 - 8}
+          fontSize={9} fontFamily="'Plus Jakarta Sans', sans-serif"
+          fontWeight="700" fill="#5b5bd6"
+          textAnchor="middle" dominantBaseline="middle"
+          style={{ textTransform: 'uppercase', letterSpacing: '0.07em' }}
+        >
+          ORIGINAL DRAFT
+        </text>
+        <text x={ROOT_W / 2 + 3} y={ROOT_H / 2 + 8}
+          fontSize={10} fontFamily="'Plus Jakarta Sans', sans-serif"
+          fill="#3d3da8" textAnchor="middle" dominantBaseline="middle"
+        >
+          Main story trunk
+        </text>
+      </g>
+    );
+
+    return (
+      <div className="tree-svg-wrapper" ref={wrapperRef}>
+        <svg
+          width={svgW}
+          height={svgH}
+          viewBox={`0 0 ${svgW} ${svgH}`}
+          className="tree-svg"
+          aria-label="Story decision tree diagram"
+          style={{ minWidth: svgW }}
+        >
+          {/* Edges behind nodes */}
+          <g className="tree-svg__edges">{edges}</g>
+          {/* Root node */}
+          {rootNode}
+          {/* Branch nodes */}
+          <g className="tree-svg__branches">{nodeCards}</g>
+        </svg>
+
+        {/* Detail card for selected branch */}
+        {selectedId && (() => {
+          const sel = forks.find((f) => f.id === selectedId);
+          if (!sel) return null;
+          return (
+            <div className="tree-svg__detail">
+              <NodeDetail
+                fork={sel}
+                onSwitch={handleSwitch}
+                switching={switching === sel.id}
+                onWhyUpdated={(why) => {
+                  setForks((prev) => prev.map((f) => f.id === sel.id ? { ...f, why } : f));
+                }}
+              />
+            </div>
+          );
+        })()}
       </div>
+    );
+  }
 
-      <div className="vhist-detail__body">
-        <div className="vhist-detail__section">
-          <div className="vhist-detail__section-label">Original</div>
-          <div className="vhist-detail__section-text vhist-detail__section-text--muted">
-            {fork.original_snippet || <em>empty</em>}
-          </div>
-        </div>
+  // -------------------------------------------------------------------------
+  // Detailed List view
+  // -------------------------------------------------------------------------
+  function renderListView(forks) {
+    const sorted = [...forks].sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+    return (
+      <div className="tree-list">
+        {sorted.map((fork) => {
+          const label = statusLabel(fork);
+          const color = STATUS_COLOR[label];
+          const isHighlighted = activeBranchId === fork.id;
+          return (
+            <div
+              key={fork.id}
+              id={`branch-node-${fork.id}`}
+              className={`tree-list__card tree-list__card--${label}${isHighlighted ? ' tree-list__card--highlighted' : ''}`}
+              onClick={() => setActiveBranchId(fork.id)}
+            >
+              <div className="tree-list__card-header">
+                <span className="tree-list__status-dot" style={{ background: color }} aria-hidden="true" />
+                <span className="tree-list__status-label" style={{ color }}>{label}</span>
+                <span className="tree-list__date">
+                  {new Date(fork.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
+                </span>
+              </div>
 
-        <div className="vhist-detail__section">
-          <div className="vhist-detail__section-label">This version</div>
-          <div className="vhist-detail__section-text">
-            {fork.branch_content || <em className="vhist-detail__empty">No content — generation failed</em>}
-          </div>
-        </div>
+              <div className="tree-list__diff">
+                <div className="tree-list__diff-col tree-list__diff-col--original">
+                  <span className="tree-list__diff-label">Original</span>
+                  <p className="tree-list__diff-text">{String(fork.original_snippet || '')}</p>
+                </div>
+                <div className="tree-list__diff-col tree-list__diff-col--alternative">
+                  <span className="tree-list__diff-label">Alternative</span>
+                  <p className="tree-list__diff-text">
+                    {fork.branch_content
+                      ? String(fork.branch_content)
+                      : <em className="tree-list__empty">Generation failed</em>}
+                  </p>
+                </div>
+              </div>
 
-        <div className="vhist-detail__section">
-          <div className="vhist-detail__section-label">Why this change</div>
-          {fork.why ? (
-            <div className="vhist-detail__section-text">{fork.why}</div>
-          ) : (
-            <div className="vhist-detail__why-empty">
-              <span className="vhist-detail__why-none">No reason recorded.</span>
-              {fork.status === 'resolved' && (
-                <button
-                  className="vhist-detail__why-btn"
-                  onClick={() => onGenerateWhy(fork.id)}
-                  disabled={whyState === 'generating'}
-                >
-                  {whyState === 'generating' ? 'Generating…' : 'Generate why'}
-                </button>
+              {fork.why && (
+                <div className="tree-list__why">
+                  <span className="tree-list__why-label">WHY THIS CHANGE</span>
+                  <p className="tree-list__why-text">{String(fork.why)}</p>
+                </div>
               )}
-              {whyState === 'generating_error' && whyError && (
-                <span className="vhist-detail__why-error">{whyError}</span>
+
+              {fork.status === 'resolved' && !fork.is_active && (
+                <div className="tree-list__actions">
+                  <button
+                    className="btn btn--primary btn--sm"
+                    onClick={(e) => { e.stopPropagation(); handleSwitch(fork.id); }}
+                    disabled={switching === fork.id}
+                  >
+                    {switching === fork.id ? 'Switching…' : 'Switch to this branch'}
+                  </button>
+                </div>
               )}
             </div>
-          )}
+          );
+        })}
+      </div>
+    );
+  }
+
+  // -------------------------------------------------------------------------
+  // Output
+  // -------------------------------------------------------------------------
+  if (loadError) {
+    return (
+      <div className="tree-view tree-view--error">
+        Failed to load tree: {loadError}
+        <button className="btn btn--ghost" style={{ marginLeft: '1rem' }} onClick={fetchTree}>Retry</button>
+      </div>
+    );
+  }
+  if (!forks) return <div className="tree-view tree-view--loading">Loading tree…</div>;
+  if (forks.length === 0) {
+    return (
+      <div className="tree-view tree-view--empty">
+        No decision forks yet. Select text in the editor and click "Show alternative" to create one.
+      </div>
+    );
+  }
+
+  return (
+    <div className="tree-view">
+      {/* ── Toolbar: mode toggle + legend ── */}
+      <div className="tree-view__toolbar">
+        <div className="tree-view__mode-toggle">
+          <button
+            className={`tree-mode-btn${viewMode === 'visual' ? ' tree-mode-btn--active' : ''}`}
+            onClick={() => setViewMode('visual')}
+          >
+            🌳 Visual Tree
+          </button>
+          <button
+            className={`tree-mode-btn${viewMode === 'list' ? ' tree-mode-btn--active' : ''}`}
+            onClick={() => setViewMode('list')}
+          >
+            📋 Detailed List
+          </button>
+        </div>
+
+        {/* Status legend — in toolbar header, z-10, never overlaps nodes */}
+        <div className="tree-view__legend" style={{ zIndex: 10, position: 'relative' }}>
+          <span className="legend-item legend-item--active">active</span>
+          <span className="legend-item legend-item--inactive">inactive</span>
+          <span className="legend-item legend-item--failed">failed</span>
+          <span className="legend-item legend-item--pending">pending</span>
         </div>
       </div>
 
-      {canSwitch && (
-        <div className="vhist-detail__footer">
-          <button
-            className="vhist-detail__switch-btn"
-            onClick={() => onSwitch(fork.id)}
-            disabled={switching}
-          >
-            {switching ? 'Switching…' : 'Switch to this branch'}
-          </button>
-        </div>
-      )}
-    </aside>
+      {/* ── Content ── */}
+      {viewMode === 'visual' ? renderVisualTree(forks) : renderListView(forks)}
+    </div>
   );
 }

@@ -1,0 +1,257 @@
+/* ManuscriptSidebar — collapsible left panel */
+
+.ms-sidebar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  z-index: 40;
+  width: 240px;
+  background: #ffffff;
+  border-right: 1px solid #e8eaed;
+  display: flex;
+  flex-direction: column;
+  transition: width 0.2s ease;
+  overflow: hidden;
+}
+
+.ms-sidebar--collapsed {
+  width: 28px;
+}
+
+/* Toggle handle */
+.ms-sidebar__toggle {
+  position: absolute;
+  top: 50%;
+  right: -1px;
+  transform: translateY(-50%);
+  z-index: 5;
+  width: 20px;
+  height: 48px;
+  background: #f4f5f7;
+  border: 1px solid #e8eaed;
+  border-left: none;
+  border-radius: 0 8px 8px 0;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  transition: background 0.12s;
+}
+
+.ms-sidebar__toggle:hover {
+  background: #eeeefc;
+}
+
+.ms-sidebar__toggle-icon {
+  font-size: 1rem;
+  color: #57606a;
+  line-height: 1;
+  font-weight: 700;
+}
+
+/* Body */
+.ms-sidebar__body {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+  padding-top: 48px; /* match root app header height */
+}
+
+.ms-sidebar__header {
+  padding: 0.85rem 1rem 0.5rem;
+  border-bottom: 1px solid #f0f1f5;
+}
+
+.ms-sidebar__title {
+  font-family: 'Plus Jakarta Sans', -apple-system, sans-serif;
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: #57606a;
+}
+
+/* ── Stats strip ── */
+.ms-stats {
+  display: flex;
+  align-items: center;
+  padding: 0.65rem 1rem;
+  gap: 0;
+  border-bottom: 1px solid #f0f1f5;
+}
+
+.ms-stats__item {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.1rem;
+}
+
+.ms-stats__value {
+  font-family: 'Plus Jakarta Sans', -apple-system, sans-serif;
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: #1f2328;
+}
+
+.ms-stats__label {
+  font-family: 'Plus Jakarta Sans', -apple-system, sans-serif;
+  font-size: 0.62rem;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #8b93a1;
+}
+
+.ms-stats__divider {
+  width: 1px;
+  height: 24px;
+  background: #e8eaed;
+}
+
+/* ── Tabs ── */
+.ms-sidebar__tabs {
+  display: flex;
+  padding: 0.5rem 0.75rem 0;
+  gap: 4px;
+}
+
+.ms-sidebar__tab {
+  flex: 1;
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  padding: 0.3rem 0.5rem;
+  font-family: 'Plus Jakarta Sans', -apple-system, sans-serif;
+  font-size: 0.76rem;
+  font-weight: 500;
+  color: #57606a;
+  cursor: pointer;
+  text-align: center;
+  transition: color 0.12s, border-color 0.12s;
+}
+
+.ms-sidebar__tab:hover {
+  color: #1f2328;
+}
+
+.ms-sidebar__tab--active {
+  color: #5b5bd6;
+  border-bottom-color: #5b5bd6;
+  font-weight: 600;
+}
+
+/* ── Outline list ── */
+.ms-outline {
+  list-style: none;
+  margin: 0.5rem 0 0;
+  padding: 0 0 1rem;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.ms-outline__empty {
+  padding: 0.75rem 1rem;
+  font-size: 0.78rem;
+  color: #8b93a1;
+  font-family: 'Plus Jakarta Sans', -apple-system, sans-serif;
+  font-style: italic;
+}
+
+.ms-outline__item {
+  padding: 0.4rem 1rem;
+  font-family: 'Plus Jakarta Sans', -apple-system, sans-serif;
+  font-size: 0.76rem;
+  color: #1f2328;
+  line-height: 1.45;
+  border-left: 2px solid transparent;
+  transition: background 0.1s;
+  word-break: break-word;
+}
+
+.ms-outline__item:hover {
+  background: #f7f8fa;
+}
+
+.ms-outline__item--branch {
+  border-left-color: #5b5bd6;
+  background: #fafaff;
+  color: #3d3da8;
+}
+
+.ms-outline__item--branch:hover {
+  background: #eeeefc;
+}
+
+.ms-outline__item--clickable {
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.25rem;
+}
+
+.ms-outline__item--clickable:focus-visible {
+  outline: 2px solid #5b5bd6;
+  outline-offset: -2px;
+}
+
+.ms-outline__item-arrow {
+  font-size: 0.8rem;
+  opacity: 0.5;
+  flex-shrink: 0;
+  transition: opacity 0.1s, transform 0.1s;
+}
+
+.ms-outline__item--clickable:hover .ms-outline__item-arrow {
+  opacity: 1;
+  transform: translateX(2px);
+}
+
+/* ── Footer / Export ── */
+.ms-sidebar__footer {
+  padding: 0.75rem 0.9rem;
+  border-top: 1px solid #e8eaed;
+  margin-top: auto;
+}
+
+.ms-export__heading {
+  font-family: 'Plus Jakarta Sans', -apple-system, sans-serif;
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #8b93a1;
+  margin: 0 0 0.4rem;
+}
+
+.ms-export__formats {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ms-export-btn {
+  width: 100%;
+  background: #f4f5f7;
+  border: 1px solid #dde0e8;
+  border-radius: 7px;
+  padding: 0.3rem 0.65rem;
+  font-family: 'Plus Jakarta Sans', -apple-system, sans-serif;
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: #1f2328;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s;
+  text-align: left;
+}
+
+.ms-export-btn:hover {
+  background: #eeeefc;
+  border-color: #5b5bd6;
+  color: #3d3da8;
+}

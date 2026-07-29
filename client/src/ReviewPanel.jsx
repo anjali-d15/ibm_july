@@ -3,11 +3,19 @@ import './ReviewPanel.css';
 
 /**
  * ReviewPanel — shown while a fork is pending (status=proposed).
- * Displays original_snippet vs branch_content side by side.
- * Approve and Reject call the parent handlers and handle their own
- * loading/error state so the buttons disable during the in-flight request.
+ *
+ * Displays original_snippet vs branch_content as a visual diff:
+ *   - Original: rose-tinted background with strikethrough treatment
+ *   - Alternative: emerald-tinted background, bold treatment
+ *
+ * Approve/Reject disable during the in-flight request and surface errors inline.
  */
-export default function ReviewPanel({ fork, onApprove, onReject }) {
+/**
+ * isSubmitting — passed from parent App to enforce global double-click guard.
+ * All AI alternative content is rendered as plain text (React JSX escapes by default)
+ * to prevent any DOM injection via Granite-generated strings.
+ */
+export default function ReviewPanel({ fork, onApprove, onReject, isSubmitting }) {
   const [loading, setLoading] = useState(null); // 'approving' | 'rejecting' | null
   const [error, setError]     = useState(null);
 
@@ -33,19 +41,24 @@ export default function ReviewPanel({ fork, onApprove, onReject }) {
     }
   }
 
-  const busy = loading !== null;
+  const busy = loading !== null || isSubmitting;
 
   return (
     <div className="review-panel">
       <p className="review-panel__heading">Review alternative</p>
-      <div className="review-panel__columns">
-        <div className="review-panel__col review-panel__col--original">
-          <span className="review-panel__col-label">Original</span>
-          <div className="review-panel__text">{fork.original_snippet}</div>
+
+      <div className="review-panel__diff">
+        {/* Original — rose/red diff block */}
+        <div className="review-panel__diff-block review-panel__diff-block--original">
+          <span className="review-panel__diff-label">Original</span>
+          {/* Rendered as plain text string — React JSX escapes all HTML to prevent injection */}
+          <p className="review-panel__diff-text">{String(fork.original_snippet)}</p>
         </div>
-        <div className="review-panel__col review-panel__col--alternative">
-          <span className="review-panel__col-label">Alternative</span>
-          <div className="review-panel__text">{fork.branch_content}</div>
+
+        {/* Alternative — emerald diff block. Content is AI-generated; rendered as sanitized plain text. */}
+        <div className="review-panel__diff-block review-panel__diff-block--alternative">
+          <span className="review-panel__diff-label">Alternative</span>
+          <p className="review-panel__diff-text">{String(fork.branch_content)}</p>
         </div>
       </div>
 

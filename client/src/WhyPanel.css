@@ -2,13 +2,13 @@
   position: fixed;
   bottom: 1.5rem;
   right: 1.5rem;
-  width: 340px;
+  width: 350px;
   max-width: calc(100vw - 3rem);
   background: #ffffff;
-  border: 1px solid #e5e7eb;
-  border-radius: 6px;
+  border: 1px solid #e2e5ea;
+  border-radius: 14px;
   padding: 1rem 1.25rem;
-  box-shadow: 0 4px 16px rgba(0,0,0,0.10);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.11);
   z-index: 40;
 }
 
@@ -16,70 +16,78 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 0.6rem;
+  margin-bottom: 0.65rem;
 }
 
 .why-panel__label {
-  font-size: 0.72rem;
-  font-weight: 600;
+  font-size: 0.7rem;
+  font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.06em;
   color: #57606a;
 }
 
 .why-panel__close {
   background: none;
   border: none;
-  color: #57606a;
+  color: #8b93a1;
   font-size: 0.85rem;
   cursor: pointer;
-  padding: 0 0.1rem;
+  padding: 0.1rem 0.25rem;
+  border-radius: 4px;
   line-height: 1;
+  transition: color 0.12s, background 0.12s;
 }
 
 .why-panel__close:hover {
   color: #1f2328;
+  background: #f0f1f5;
 }
 
 .why-panel__text {
+  font-family: 'Lora', Georgia, serif;
   font-size: 0.9rem;
-  line-height: 1.6;
-  color: #1f2328;
-  margin: 0 0 0.75rem;
+  line-height: 1.65;
+  color: #23272f;
+  margin: 0 0 0.8rem;
 }
 
 .why-panel__textarea {
   width: 100%;
-  padding: 0.5rem 0.6rem;
-  border: 1px solid #e5e7eb;
-  border-radius: 4px;
-  font-size: 0.9rem;
+  padding: 0.5rem 0.7rem;
+  border: 1px solid #dde0e8;
+  border-radius: 10px;
+  font-family: 'Plus Jakarta Sans', -apple-system, sans-serif;
+  font-size: 0.875rem;
   line-height: 1.5;
   color: #1f2328;
   resize: vertical;
   box-sizing: border-box;
   margin-bottom: 0.5rem;
+  outline: none;
+  transition: border-color 0.13s, box-shadow 0.13s;
 }
 
 .why-panel__textarea:focus {
-  outline: none;
-  border-color: #3b82d4;
+  border-color: #5b5bd6;
+  box-shadow: 0 0 0 3px rgba(91, 91, 214, 0.12);
 }
 
 .why-panel__textarea:disabled {
-  background: #f7f8fa;
-  color: #57606a;
+  background: #f4f5f7;
+  color: #8b93a1;
 }
 
 .why-panel__error {
-  color: #c0392b;
+  color: #b91c1c;
   font-size: 0.8rem;
   margin: 0 0 0.5rem;
 }
 
 .why-panel__saved {
-  color: #2da44e;
+  color: #059669;
   font-size: 0.82rem;
+  font-weight: 600;
   margin: 0 0 0.75rem;
 }
 
