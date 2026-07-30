@@ -49,6 +49,9 @@ export default function App() {
   const [highlightForkId, setHighlightForkId]   = useState(null);
 
   const editorRef = useRef(null);
+  // Snapshot of editor text + segments captured just before a fork is generated.
+  // Used to restore the editor on reject without a server round-trip.
+  const preForkedSnapshotRef = useRef(null);
 
   const initialContent = segments ? segments.map((s) => s.text).join('') : null;
   const branchCount    = segments ? segments.filter((s) => s.fork_id != null).length : 0;
@@ -80,8 +83,12 @@ export default function App() {
   }, [currentUser]);
 
   // ── Load document ──────────────────────────────────────────────────────────
+  // Guard on currentUser: do not attempt any document fetch before auth is
+  // confirmed. Without this, the LEGACY_DOC_ID fetch fires on every cold load
+  // (incognito / guest), hits the server unauthenticated, and leaves segments=null
+  // forever → "Loading document…" spinner that never clears.
   useEffect(() => {
-    if (!docId) return;
+    if (!currentUser || !docId) return;
     setSegments(null);
     setLoadError(null);
     fetch(`/document/${docId}/resolved`, { credentials: 'include' })
@@ -97,9 +104,11 @@ export default function App() {
       .then((r) => r.ok ? r.json() : null)
       .then((doc) => { if (doc?.title) setDocTitle(doc.title); })
       .catch(() => {});
-  }, [docId]);
+  }, [currentUser, docId]);
 
-  async function refreshSegments() {
+  // updateEditor=true  → also push resolved text into the Tiptap editor (fork ops)
+  // updateEditor=false → only refresh the segment map (plain autosave; editor already has latest)
+  async function refreshSegments({ updateEditor = true } = {}) {
     const r = await fetch(`/document/${docId}/resolved`, { credentials: 'include' });
     if (!r.ok) {
       const text = await r.text().catch(() => '');
@@ -107,7 +116,7 @@ export default function App() {
     }
     const { segments: newSegments } = await r.json();
     setSegments(newSegments);
-    if (editorRef.current) {
+    if (updateEditor && editorRef.current) {
       const text = newSegments.map((s) => s.text).join('');
       editorRef.current.setContent(text);
     }
@@ -147,6 +156,11 @@ export default function App() {
   async function handleShowAlternative() {
     if (isSubmitting) return;
     if (editorRef.current) await editorRef.current.flushSave();
+    // Snapshot current state so reject can restore without a server round-trip
+    preForkedSnapshotRef.current = {
+      text:     editorRef.current?.getEditorText() ?? null,
+      segments: segments,
+    };
     setQuickInstruction(null);
     setUiPhase('instruction');
   }
@@ -154,6 +168,11 @@ export default function App() {
   async function handleQuickAction(instruction) {
     if (isSubmitting) return;
     if (editorRef.current) await editorRef.current.flushSave();
+    // Snapshot current state so reject can restore without a server round-trip
+    preForkedSnapshotRef.current = {
+      text:     editorRef.current?.getEditorText() ?? null,
+      segments: segments,
+    };
     setQuickInstruction(instruction);
     setUiPhase('instruction');
   }
@@ -207,7 +226,18 @@ export default function App() {
         }
         throw new Error(data.error || `Reject failed (${res.status})`);
       }
-      try { await refreshSegments(); } catch (err) { setGlobalError(err.message); }
+
+      // Restore pre-fork snapshot so the editor never shows a ghost state.
+      // Fall back to a server refresh only if the snapshot is missing.
+      const snapshot = preForkedSnapshotRef.current;
+      if (snapshot?.text != null && snapshot?.segments != null) {
+        setSegments(snapshot.segments);
+        if (editorRef.current) editorRef.current.setContent(snapshot.text);
+      } else {
+        try { await refreshSegments(); } catch (err) { setGlobalError(err.message); }
+      }
+      preForkedSnapshotRef.current = null;
+
       setUiPhase('editing');
       setPendingFork(null);
       setSelection(null);
@@ -466,6 +496,7 @@ export default function App() {
               onToggleFocus={() => setFocusMode((f) => !f)}
               highlightForkId={highlightForkId}
               onHighlightDone={() => setHighlightForkId(null)}
+              onSave={() => refreshSegments({ updateEditor: false }).catch(() => {})}
             />
           </EditorErrorBoundary>
 

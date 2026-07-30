@@ -198,8 +198,21 @@ export default function ConsistencyPanel({ docId, onClose }) {
                 </div>
               )}
 
-              {/* Question */}
-              <p className="cpanel__question">{current.question}</p>
+              {/* Question — sanitize raw DB identifiers before rendering */}
+              <p className="cpanel__question">
+                {current.question
+                  // Remove "for 'uuid'" / "for \"uuid\"" patterns (the exact shape in the bug report)
+                  ?.replace(/\bfor ['"][0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}['"]/gi, '')
+                  // Remove any remaining bare UUID strings
+                  ?.replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, '')
+                  // Remove "in fork_id 'xxx'" phrases
+                  ?.replace(/\bin fork_id ['"][^'"]*['"]/gi, '')
+                  // Replace any remaining bare "fork_id" token
+                  ?.replace(/\bfork_id\b/gi, 'earlier rationale')
+                  // Collapse any double-spaces left after removals
+                  ?.replace(/  +/g, ' ')
+                  .trim()}
+              </p>
 
               {/* Action buttons */}
               <div className="cpanel__verdicts">

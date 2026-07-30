@@ -18,12 +18,19 @@ const AUTOSAVE_DEBOUNCE_MS = 500;
  */
 const Editor = forwardRef(function Editor(
   { docId, initialContent, segments, locked, onSelectionChange, focusMode, onToggleFocus,
-    highlightForkId, onHighlightDone },
+    highlightForkId, onHighlightDone, onSave },
   ref
 ) {
   const [saveStatus, setSaveStatus] = useState('idle');
   const saveTimerRef = useRef(null);
   const pendingSaveRef = useRef(null);
+
+  // Refs so that onSelectionUpdate closure always reads current prop values
+  // without needing the editor to be recreated when props change.
+  const segmentsRef = useRef(segments);
+  const onSelectionChangeRef = useRef(onSelectionChange);
+  useEffect(() => { segmentsRef.current = segments; }, [segments]);
+  useEffect(() => { onSelectionChangeRef.current = onSelectionChange; }, [onSelectionChange]);
 
   // ---------------------------------------------------------------------------
   // Autosave
@@ -39,6 +46,7 @@ const Editor = forwardRef(function Editor(
         .then((res) => {
           if (!res.ok) throw new Error(`${res.status}`);
           setSaveStatus('saved');
+          if (onSave) onSave();
         })
         .catch(() => setSaveStatus('error'))
         .finally(() => {
@@ -76,7 +84,17 @@ const Editor = forwardRef(function Editor(
     editorRef.current.commands.setContent(html, /* emitUpdate= */ false);
   }, []);
 
-  useImperativeHandle(ref, () => ({ flushSave, setContent }), [flushSave, setContent]);
+  const getEditorText = useCallback(() => {
+    if (!editorRef.current) return '';
+    return editorRef.current.state.doc.textBetween(
+      0,
+      editorRef.current.state.doc.content.size,
+      '\n\n',
+      ''
+    );
+  }, []);
+
+  useImperativeHandle(ref, () => ({ flushSave, setContent, getEditorText }), [flushSave, setContent, getEditorText]);
 
   // ---------------------------------------------------------------------------
   // Tiptap editor setup
@@ -101,26 +119,28 @@ const Editor = forwardRef(function Editor(
       saveTimerRef.current = setTimeout(() => persistContent(text), AUTOSAVE_DEBOUNCE_MS);
     },
     onSelectionUpdate({ editor: ed }) {
-      if (!onSelectionChange) return;
+      const notify = onSelectionChangeRef.current;
+      if (!notify) return;
       const { from, to } = ed.state.selection;
       if (from === to) {
-        onSelectionChange(null);
+        notify(null);
         return;
       }
-      const textBefore = ed.state.doc.textBetween(0, Math.max(0, from - 1), '\n\n', '');
+      const textBefore   = ed.state.doc.textBetween(0, from, '\n\n', '');
       const textSelected = ed.state.doc.textBetween(from, to, '\n\n', '');
 
       const plainStart = textBefore.length;
-      const plainEnd = plainStart + textSelected.length;
+      const plainEnd   = plainStart + textSelected.length;
 
-      if (!segments || segments.length === 0) {
-        onSelectionChange(null);
+      const currentSegments = segmentsRef.current;
+      if (!currentSegments || currentSegments.length === 0) {
+        notify(null);
         return;
       }
 
-      const owning = segments.find((s) => plainStart >= s.start && plainEnd <= s.end);
+      const owning = currentSegments.find((s) => plainStart >= s.start && plainEnd <= s.end);
       if (!owning) {
-        onSelectionChange({ crossSegment: true, plainStart, plainEnd });
+        notify({ crossSegment: true, plainStart, plainEnd });
         return;
       }
 
@@ -132,7 +152,7 @@ const Editor = forwardRef(function Editor(
         }
       } catch (_) { /* ignore */ }
 
-      onSelectionChange({
+      notify({
         crossSegment: false,
         segment_fork_id: owning.fork_id,
         anchor_start: plainStart,

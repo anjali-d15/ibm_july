@@ -467,6 +467,13 @@ app.post('/document/:id/generate-alternative', ensureSession, rateLimitMiddlewar
   }
 
   try {
+    console.log('[generate-alternative] LLM payload:', {
+      selected_text,
+      instruction: instruction || undefined,
+      anchor_start,
+      anchor_end,
+      segment_fork_id: segment_fork_id ?? null,
+    });
     const alternative = await generateAlternative(selected_text, instruction || undefined);
     db.prepare(
       `UPDATE forks SET branch_content = ?, status = 'proposed', updated_at = datetime('now') WHERE id = ?`

@@ -22,14 +22,19 @@ const CHAT_API_VERSION = '2024-05-31';
 // ---------------------------------------------------------------------------
 // Dev-only response cache — never runs in production
 // ---------------------------------------------------------------------------
+
+// Bump this whenever any prompt template changes so stale dev-cache entries
+// are automatically invalidated without a server restart.
+const PROMPT_VERSION = 'v8';
+
 const devCache = new Map();
 
 function devCacheGet(key) {
   if (process.env.NODE_ENV === 'production') return undefined;
-  return devCache.get(key);
+  return devCache.get(`${PROMPT_VERSION}:${key}`);
 }
 function devCacheSet(key, value) {
-  if (process.env.NODE_ENV !== 'production') devCache.set(key, value);
+  if (process.env.NODE_ENV !== 'production') devCache.set(`${PROMPT_VERSION}:${key}`, value);
 }
 
 // ---------------------------------------------------------------------------
@@ -44,7 +49,7 @@ function devCacheSet(key, value) {
  * @param {number} maxNewTokens
  * @returns {Promise<string>}
  */
-async function callChat(messages, maxNewTokens) {
+async function callChat(messages, maxNewTokens, useJsonMode = true) {
   const token = await getBearerToken();
   const projectId = process.env.WATSONX_PROJECT_ID;
   const baseUrl = process.env.WATSONX_URL || 'https://us-south.ml.cloud.ibm.com';
@@ -57,7 +62,10 @@ async function callChat(messages, maxNewTokens) {
       decoding_method: 'greedy',
       max_new_tokens: maxNewTokens,
     },
-    response_format: { type: 'json_object' },
+    // json_object mode forces the model to close the JSON object early when the
+    // string value contains inner quotes (e.g. dialogue). Disable it for
+    // alternative generation and rely on prompt instructions + defensive parsing.
+    ...(useJsonMode ? { response_format: { type: 'json_object' } } : {}),
     project_id: projectId,
   };
 
@@ -99,16 +107,33 @@ async function callChat(messages, maxNewTokens) {
 // ---------------------------------------------------------------------------
 
 const ALTERNATIVE_SYSTEM = [
-  'You are a Narrative Architect — a master story co-author and dramatic analyst.',
-  'Before rewriting, you silently analyze: character motivations and psychological states,',
-  'underlying tensions and power dynamics, plot causality and dramatic stakes,',
-  'and the potential for dramatic shifts (character decisions, alternate fates, plot twists, subversion of expectations).',
-  'You handle both structural narrative changes (character choices, plot outcomes, fates, twists)',
-  'and stylistic/tonal rewrites with equal authority.',
+  'You are an expert fiction editor modifying selected text based on user direction.',
+  'STRICT DIALOGUE & STRUCTURE RULES:',
+  '1. PRESERVE DIALOGUE TAGS & BEATS: If the selection contains dialogue tags or action beats (e.g., "she said softly", "he muttered, turning away"), you MUST retain or adapt equivalent tags/beats in the rewrite. Do NOT strip out narrative beats or convert tagged dialogue into untagged prose.',
+  '2. PRESERVE QUOTATION MARKS: Any spoken dialogue in the original that is wrapped in quotation marks must remain wrapped in quotation marks in the rewrite.',
+  '3. MATCH ORIGINAL SCOPE: Your rewrite must contain the same number of sentences, dialogue lines, and structural elements as the original. Do NOT summarize, truncate, or compress the selection.',
+  '4. PRESERVE POV & PRONOUNS: Keep character names, pronouns (I/she/he/they), and narrative perspective identical to the original.',
+  '5. TONAL ADJUSTMENT ONLY: Apply the requested style change (e.g., "colder", "warmer") to the spoken lines, word choice, and action beats — do NOT restructure the scene.',
+  '6. CLEAN OUTPUT ONLY: Return ONLY the raw rewritten text block. No surrounding quotes, no backticks, no preambles, no explanations.',
   'You always respond with valid JSON only — no prose, no markdown, no explanation outside the JSON.',
   'Your response must be a single JSON object with exactly this key: "alternative".',
-  'The value of "alternative" is the rewritten passage text, as a plain string.',
+  'The value of "alternative" is the rewritten passage as a plain string, preserving the original dialogue and tag structure.',
 ].join(' ');
+
+/**
+ * Strip surrounding quotes/backticks and extra whitespace from a model-returned alternative.
+ * @param {string} text
+ * @returns {string}
+ */
+function sanitizeAlternative(text) {
+  if (!text) return '';
+  let cleaned = text.trim();
+  if ((cleaned.startsWith('"') && cleaned.endsWith('"')) ||
+      (cleaned.startsWith("'") && cleaned.endsWith("'"))) {
+    cleaned = cleaned.slice(1, -1).trim();
+  }
+  return cleaned;
+}
 
 /**
  * Build the user message for alternative generation.
@@ -119,15 +144,24 @@ const ALTERNATIVE_SYSTEM = [
  * @returns {string}
  */
 function buildPrompt(selectedText, instruction) {
+  const sentenceCount = (selectedText.match(/[.!?]["']?\s/g) || []).length || 1;
   const directive = instruction && instruction.trim()
-    ? `Creative direction: "${instruction.trim()}". Consider the character motivations, dramatic stakes, and plot causality present in the passage. You may alter character choices, fates, plot outcomes, introduce twists, or subvert expectations as needed.`
-    : `Analyze the character motivations, tensions, and dramatic stakes in this passage, then write an alternative narrative path that explores a meaningfully different plot direction, character decision, or dramatic outcome.`;
+    ? `Style direction: "${instruction.trim()}". Apply this change to the tone, word choice, and emotional register only. Do NOT change the sentence count (${sentenceCount}), dialogue structure, or character perspective.`
+    : `Rewrite this passage with a meaningfully different tone or emotional register while keeping the same sentence count (${sentenceCount}), dialogue structure, and character perspective.`;
 
   return (
     `Your response must be a JSON object with exactly this structure:\n` +
     `{"alternative": "<your rewritten passage here>"}\n\n` +
-    `Example of a correct response:\n` +
-    `{"alternative": "She arrived at noon, just as the clock struck twelve."}\n\n` +
+    `EXAMPLES OF CORRECT REWRITES:\n` +
+    `Example 1:\n` +
+    `Selection: "I understand completely," she said softly. "And I will never forgive you for it."\n` +
+    `Instruction: Make it colder\n` +
+    `Output: {"alternative": "\\"I comprehend your position,\\" she said flatly. \\"And I will never offer you forgiveness.\\""}\n\n` +
+    `Example 2:\n` +
+    `Selection: "Get out of here!" he yelled, slamming the door.\n` +
+    `Instruction: Make it quieter\n` +
+    `Output: {"alternative": "\\"Leave,\\" he whispered, closing the door firmly."}\n\n` +
+    `The original selection has ${sentenceCount} sentence(s). Your rewrite must also have ${sentenceCount} sentence(s) with the same dialogue and tag structure.\n\n` +
     `Original passage:\n${selectedText}\n\n` +
     `${directive}\n\n` +
     `Do not write preamble or explanations. Return only the JSON object.`
@@ -155,7 +189,8 @@ async function generateAlternative(selectedText, instruction) {
       { role: 'system', content: ALTERNATIVE_SYSTEM },
       { role: 'user', content: userMessage },
     ],
-    400
+    600,
+    false   // disable json_object mode — inner dialogue quotes cause early truncation
   );
 
   let parsed;
@@ -190,7 +225,7 @@ async function generateAlternative(selectedText, instruction) {
     throw new Error(`Granite response missing "alternative" field: ${rawText.slice(0, 200)}`);
   }
 
-  const result = parsed.alternative.trim();
+  const result = sanitizeAlternative(parsed.alternative);
   devCacheSet(cacheKey, result);
   return result;
 }
@@ -293,10 +328,20 @@ async function draftWhySummary(originalSnippet, branchContent) {
 // ---------------------------------------------------------------------------
 
 const CONSISTENCY_SYSTEM = [
-  'You are a meticulous story editor specializing in plot, timeline, and narrative fact continuity.',
+  'You are a narrative consistency auditor.',
+  'Compare the user\'s current manuscript text against their recorded rationales.',
+  'Look ONLY for explicit contradictions or character regressions',
+  '(e.g., if a past rationale states "she never forgives betrayal", flag any scene where she forgives him).',
+  'Do NOT include raw database identifiers, UUIDs, or internal strings',
+  '(e.g., NEVER write "fork_id" or raw hashes like "c37527..."). Refer to past choices naturally,',
+  'such as "as noted in your earlier rationale".',
   'You always respond with valid JSON only — no prose, no markdown, no explanation outside the JSON.',
   'Your response must be a single JSON object with exactly this key: "findings".',
-  'The value of "findings" is an array (possibly empty) of objects each with "fork_id" (string) and "question" (string).',
+  'The value of "findings" is an array (possibly empty) of objects each with:',
+  '"fork_id" (string, the internal reference — used for routing only, never shown to users),',
+  '"hasConflict" (boolean), "question" (string, concise, under 75 words — format:',
+  '"In your earlier rationale, you noted: [Rationale]. However, in this scene: [Conflict].',
+  'Is this change intentional or a mistake?"), and "earlierRationale" (string).',
 ].join(' ');
 
 /**
@@ -306,23 +351,41 @@ const CONSISTENCY_SYSTEM = [
  * @returns {string}
  */
 function buildConsistencyPrompt(resolvedText, decisions) {
+  // Map each decision to a human-readable label only — the UUID is kept in a
+  // separate index that the model never sees inline, preventing it from echoing
+  // raw IDs into user-facing question text.
+  const idByLabel = {};  // "Decision 1" → actual fork UUID
   const decisionList = decisions
-    .map((d, i) => `Decision ${i + 1} (fork_id: "${d.id}"):\n  Narrative rationale: ${d.why}`)
+    .map((d, i) => {
+      const label = `Decision ${i + 1}`;
+      idByLabel[label] = d.id;
+      return `${label}:\n  Narrative rationale: ${d.why}`;
+    })
     .join('\n\n');
+
+  // Embed the label→id mapping as a machine-only reference comment so the
+  // model can emit the correct fork_id without ever reading UUIDs in-context.
+  const idMap = Object.entries(idByLabel)
+    .map(([label, id]) => `${label} → ${id}`)
+    .join('\n');
 
   return (
     `Your response must be a JSON object with exactly this structure:\n` +
     `{"findings": [{"fork_id": "...", "question": "..."}, ...]}\n\n` +
     `An empty array means no contradictions were found.\n\n` +
+    `IMPORTANT: The "question" field must NEVER contain raw IDs or UUIDs. ` +
+    `Refer to decisions naturally, e.g. "In your earlier rationale, you noted…".\n` +
+    `Use the mapping below ONLY to set the "fork_id" field — do NOT include these IDs in question text.\n` +
+    `ID mapping (internal use only — do NOT quote these in questions):\n${idMap}\n\n` +
     `You are a story editor reviewing a manuscript alongside the author's recorded narrative decisions.\n` +
     `For each decision, check whether the current document text contradicts or undermines the stated intent.\n` +
     `Specifically look for:\n` +
     `- Plot contradictions: a character acts in a way that conflicts with an earlier established decision or outcome\n` +
-    `- Timeline mismatches: events occur in an order inconsistent with earlier text (e.g., an object is used before it was obtained)\n` +
+    `- Timeline mismatches: events occur in an order inconsistent with earlier text\n` +
     `- Fact continuity errors: physical details, character traits, locations, or item states that contradict earlier descriptions\n` +
     `- Tone/motivation drift: a character's emotional state or motivation contradicts what was established in the recorded decision\n` +
     `Only flag contradictions in content that follows the decision chronologically.\n` +
-    `For each contradiction found, include the fork_id and a specific clarifying question that helps the author resolve the issue.\n\n` +
+    `For each contradiction found, set fork_id from the mapping above and write a clarifying question with NO raw IDs.\n\n` +
     `Recorded decisions (ordered oldest first):\n${decisionList}\n\n` +
     `Current document:\n${resolvedText}`
   );
