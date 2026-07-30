@@ -373,3 +373,140 @@
   display: flex;
   justify-content: flex-end;
 }
+
+/* ── Switch error banner ─────────────────────────────────────── */
+.tree-view__switch-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  background: #fef2f2;
+  border: 1px solid #fca5a5;
+  border-radius: 10px;
+  padding: 0.65rem 1rem;
+  margin-bottom: 1rem;
+  font-size: 0.85rem;
+  color: #991b1b;
+}
+
+.tree-view__switch-error-close {
+  background: none;
+  border: none;
+  color: #dc2626;
+  cursor: pointer;
+  font-size: 0.85rem;
+  padding: 0;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+/* ── Branch number label in list view ───────────────────────── */
+.tree-list__branch-num {
+  font-size: 0.76rem;
+  font-weight: 700;
+  color: #5b5bd6;
+  background: #f0f0fb;
+  border: 1px solid #c5c5f0;
+  border-radius: 5px;
+  padding: 0.1rem 0.45rem;
+  letter-spacing: 0.03em;
+  flex-shrink: 0;
+}
+
+/* ── Origin row in list view ─────────────────────────────────── */
+.tree-list__origin {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  background: #f7f8fa;
+  border: 1px solid #e8eaed;
+  border-radius: 7px;
+  padding: 0.35rem 0.7rem;
+  margin-bottom: 0.75rem;
+  font-size: 0.8rem;
+}
+
+.tree-list__origin-label {
+  font-size: 0.67rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: #8b93a1;
+  flex-shrink: 0;
+}
+
+.tree-list__origin-text {
+  font-family: 'Lora', Georgia, serif;
+  color: #57606a;
+  font-style: italic;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* ── Sibling group wrapper (list view) ──────────────────────── */
+.tree-list__group {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.tree-list__group--multi {
+  border: 1.5px solid #c5c5f0;
+  border-radius: 14px;
+  padding: 0.5rem 0.5rem 0.75rem;
+  background: #f9f9fd;
+}
+
+/* Group header — shows variant count + shared origin */
+.tree-list__group-header {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.4rem 0.6rem 0.7rem;
+  flex-wrap: wrap;
+}
+
+.tree-list__group-anchor-label {
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: #7c5cd8;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  flex-shrink: 0;
+}
+
+.tree-list__group-origin {
+  font-family: 'Lora', Georgia, serif;
+  font-size: 0.78rem;
+  color: #57606a;
+  font-style: italic;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  flex: 1;
+}
+
+/* Sibling card variant — slightly inset */
+.tree-list__card--sibling {
+  border-radius: 10px;
+  margin-bottom: 0.5rem;
+  box-shadow: none;
+}
+
+.tree-list__card--sibling:last-child {
+  margin-bottom: 0;
+}
+
+/* Active variant badge inside a sibling group */
+.tree-list__active-badge {
+  font-size: 0.68rem;
+  font-weight: 700;
+  color: #059669;
+  background: #d1fae5;
+  border: 1px solid #a7f3d0;
+  border-radius: 5px;
+  padding: 0.1rem 0.4rem;
+  letter-spacing: 0.03em;
+  flex-shrink: 0;
+}

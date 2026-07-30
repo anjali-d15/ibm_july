@@ -11,18 +11,94 @@ import './TreeView.css';
  *
  * Props:
  *   docId              string
- *   onSwitch(forkId)   — called after a successful branch switch
+ *   onSwitch(forkId, segments) — called after a successful branch switch;
+ *                                segments is the authoritative resolved array
  *   activeBranchId     — externally-set highlighted branch (from sidebar click)
  */
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns a string key that uniquely identifies a sibling group.
+ * Two forks are siblings when they share the same parent segment and span
+ * the same anchor range inside the same document.
+ *
+ * Key: "documentId|parentForkId|anchorStart|anchorEnd"
+ * The document_id is now included in the tree response so all four parts
+ * are available. Falls back gracefully when document_id is absent (legacy).
+ */
+function siblingKey(fork) {
+  const docPart    = fork.document_id ?? '_';
+  const parentPart = fork.parent_fork_id ?? '__root__';
+  return `${docPart}|${parentPart}|${fork.anchor_start}|${fork.anchor_end}`;
+}
+
+/**
+ * Build a Map<siblingKey → fork[]> for all resolved forks.
+ * Groups with only one member are still included (simplifies rendering).
+ */
+function buildSiblingGroups(forks) {
+  const groups = new Map();
+  for (const fork of forks) {
+    if (fork.status === 'proposed' || fork.status === 'failed') continue;
+    const key = siblingKey(fork);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(fork);
+  }
+  return groups;
+}
+
+/**
+ * Within a sibling group, enforce that exactly ONE fork is considered active.
+ * If the DB is stale (zero or two active), we pick the most recently updated one.
+ * Returns a new array of forks with is_active normalised.
+ */
+function normaliseSiblingActivity(forks, siblingGroups) {
+  // Build a set of forks whose is_active must be overridden
+  const overrides = new Map(); // forkId → 0|1
+
+  for (const [, group] of siblingGroups) {
+    const activeInGroup = group.filter((f) => f.is_active);
+
+    if (activeInGroup.length === 1) continue; // already correct — nothing to do
+
+    if (activeInGroup.length === 0) {
+      // No active fork — pick the most recently updated resolved fork
+      const best = [...group]
+        .filter((f) => f.status === 'resolved')
+        .sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at))[0];
+      if (best) overrides.set(best.id, 1);
+      for (const f of group) {
+        if (f.status === 'resolved' && f.id !== best?.id) overrides.set(f.id, 0);
+      }
+    } else {
+      // Multiple active forks — keep most recently updated, deactivate the rest
+      const best = [...activeInGroup].sort(
+        (a, b) => new Date(b.updated_at) - new Date(a.updated_at)
+      )[0];
+      for (const f of activeInGroup) {
+        if (f.id !== best.id) overrides.set(f.id, 0);
+      }
+    }
+  }
+
+  if (overrides.size === 0) return forks; // fast path — no changes needed
+  return forks.map((f) =>
+    overrides.has(f.id) ? { ...f, is_active: overrides.get(f.id) } : f
+  );
+}
+
 export default function TreeView({ docId, onSwitch, activeBranchId: externalActiveBranchId }) {
-  const [forks, setForks]                       = useState(null);
-  const [loadError, setLoadError]               = useState(null);
-  const [selectedId, setSelectedId]             = useState(null);
-  const [switching, setSwitching]               = useState(null);
-  const [viewMode, setViewMode]                 = useState('visual'); // 'visual' | 'list'
-  const [activeBranchId, setActiveBranchId]     = useState(externalActiveBranchId ?? null);
-  const [svgSize, setSvgSize]                   = useState({ w: 0, h: 0 });
-  const wrapperRef                              = useRef(null);
+  const [forks, setForks]               = useState(null);
+  const [loadError, setLoadError]       = useState(null);
+  const [selectedId, setSelectedId]     = useState(null);
+  const [switching, setSwitching]       = useState(null);
+  const [switchError, setSwitchError]   = useState(null);
+  const [viewMode, setViewMode]         = useState('visual'); // 'visual' | 'list'
+  const [activeBranchId, setActiveBranchId] = useState(externalActiveBranchId ?? null);
+  const wrapperRef                      = useRef(null);
 
   // Sync external prop into local state when it changes
   useEffect(() => {
@@ -43,17 +119,53 @@ export default function TreeView({ docId, onSwitch, activeBranchId: externalActi
 
   // -------------------------------------------------------------------------
   // Branch switch
+  //
+  // 1. Optimistic update — flip is_active locally so the badge changes
+  //    instantly without waiting for the server.
+  // 2. POST /fork/:id/switch — server deactivates siblings, activates target,
+  //    and returns the authoritative { ok, segments, forks } payload.
+  // 3. On success — apply the server's forks array directly; no second fetch.
+  // 4. On failure — roll back the optimistic update and show an error banner.
   // -------------------------------------------------------------------------
   async function handleSwitch(forkId) {
+    if (!forkId) return;
+    if (switching) return; // block concurrent switches
+
+    const targetFork = forks?.find((f) => f.id === forkId);
+    if (!targetFork) return;
+
+    // Optimistic update: activate target, deactivate all siblings instantly
+    const prevForks = forks;
+    const targetKey = siblingKey(targetFork);
+    setForks((prev) =>
+      prev.map((f) => {
+        if (f.id === forkId) return { ...f, is_active: 1 };
+        if (siblingKey(f) === targetKey && f.id !== forkId) return { ...f, is_active: 0 };
+        return f;
+      })
+    );
+    setActiveBranchId(forkId);
+
     setSwitching(forkId);
+    setSwitchError(null);
     try {
       const res = await fetch(`/fork/${forkId}/switch`, { method: 'POST', credentials: 'include' });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || `${res.status}`);
-      fetchTree();
-      if (onSwitch) onSwitch(forkId);
+      if (data.ok === false) throw new Error(data.error || 'Switch failed');
+
+      // Apply the authoritative forks array returned by the server — no second fetch needed.
+      if (Array.isArray(data.forks) && data.forks.length > 0) {
+        setForks(data.forks);
+      } else {
+        // Fallback: server didn't return forks (shouldn't happen), re-fetch
+        fetchTree();
+      }
+
+      if (onSwitch) onSwitch(data.activeForkId ?? forkId, data.segments ?? null);
     } catch (err) {
-      alert(`Switch failed: ${err.message}`);
+      setForks(prevForks); // roll back on failure
+      setSwitchError(`Failed to switch branch: ${err.message}`);
     } finally {
       setSwitching(null);
     }
@@ -93,145 +205,189 @@ export default function TreeView({ docId, onSwitch, activeBranchId: externalActi
 
   // -------------------------------------------------------------------------
   // Visual Tree — bipartite 2-column SVG layout
-  //
-  // Layout:  [Root/Trunk node]  ──bezier──>  [Branch nodes stacked vertically]
-  //
-  // For documents with only top-level forks (no parent_fork_id) we treat them
-  // all as branch nodes hanging off a synthetic "Original Manuscript" root.
-  // For documents that have a proper parent/child tree we use the real tree.
   // -------------------------------------------------------------------------
-  function renderVisualTree(forks) {
-    if (!forks || forks.length === 0) return null;
+  function renderVisualTree(rawForks) {
+    if (!rawForks || rawForks.length === 0) return null;
+
+    // --- Build sibling groups and normalise is_active ---
+    const sibGroups   = buildSiblingGroups(rawForks);
+    const normForks   = normaliseSiblingActivity(rawForks, sibGroups);
 
     // --- Geometry constants ---
-    const ROOT_W   = 188;   // root card width
-    const ROOT_H   = 64;    // root card height
-    const NODE_W   = 210;   // branch card width
-    const NODE_H   = 60;    // branch card height
-    const V_GAP    = 18;    // vertical gap between branch cards
-    const H_SPAN   = 140;   // horizontal gap between columns
-    const PAD_TOP  = 24;
-    const PAD_LEFT = 24;
-    const PAD_RIGHT= 32;
+    const ROOT_W    = 188;
+    const ROOT_H    = 64;
+    const NODE_W    = 230;
+    const NODE_H    = 72;
+    const V_GAP     = 14;   // gap between cards in the same sibling group
+    const GROUP_GAP = 26;   // extra gap between different sibling groups
+    const H_SPAN    = 140;
+    const PAD_TOP   = 24;
+    const PAD_LEFT  = 24;
+    const PAD_RIGHT = 32;
 
-    // Separate top-level forks (no parent) from child forks
-    const topLevel = forks.filter(f => !f.parent_fork_id);
-    const children  = forks.filter(f => !!f.parent_fork_id);
+    // Build stable branch number index (order by creation time)
+    const chronological = [...normForks].sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+    const branchIndex   = new Map(chronological.map((f, i) => [f.id, i + 1]));
 
-    // Build groups: each top-level fork is a "root anchor" with its children
-    // If all forks are top-level we produce one synthetic root + all branches
-    const allTopLevel = children.length === 0;
+    // Build ordered layout: group siblings together, ordered by earliest
+    // creation time within the group, groups ordered by earliest fork in group.
+    const groupOrder = [];   // [{ key, forks[] }]
+    const seen = new Set();
+    for (const fork of chronological) {
+      const key = siblingKey(fork);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      // Sort siblings: active first, then by creation time
+      const group = (sibGroups.get(key) ?? [fork])
+        .sort((a, b) => (b.is_active - a.is_active) || (new Date(a.created_at) - new Date(b.created_at)));
+      groupOrder.push({ key, group });
+    }
+    // Include non-resolved forks (proposed/failed) as singleton groups
+    for (const fork of normForks) {
+      if (fork.status === 'proposed' || fork.status === 'failed') {
+        if (!seen.has(`singleton-${fork.id}`)) {
+          seen.add(`singleton-${fork.id}`);
+          groupOrder.push({ key: `singleton-${fork.id}`, group: [fork] });
+        }
+      }
+    }
 
-    // We always render a synthetic "Original" root node on the left
-    // and all top-level forks as branches on the right.
-    // Child forks are rendered as sub-branches indented further right.
+    // Compute Y positions: each card is NODE_H tall, sibling cards have V_GAP,
+    // different groups have GROUP_GAP between them.
+    let yOffset = PAD_TOP;
+    const branchPositions = [];
+    for (let gi = 0; gi < groupOrder.length; gi++) {
+      const { group } = groupOrder[gi];
+      for (let fi = 0; fi < group.length; fi++) {
+        branchPositions.push({ fork: normForks.find((f) => f.id === group[fi].id) ?? group[fi], y: yOffset });
+        yOffset += NODE_H + (fi < group.length - 1 ? V_GAP : 0);
+      }
+      if (gi < groupOrder.length - 1) yOffset += GROUP_GAP;
+    }
 
-    // For simplicity: flatten into a 2-column view.
-    // Column 0 (x=PAD_LEFT): synthetic trunk
-    // Column 1 (x=PAD_LEFT + ROOT_W + H_SPAN): all forks stacked
-    const branchNodes = forks; // show every fork as a branch
-
-    const totalBranchH = branchNodes.length * (NODE_H + V_GAP) - V_GAP;
+    const totalBranchH = yOffset - PAD_TOP;
     const rootY        = PAD_TOP + Math.max(0, (totalBranchH - ROOT_H) / 2);
+    const svgW         = PAD_LEFT + ROOT_W + H_SPAN + NODE_W + PAD_RIGHT;
+    const svgH         = yOffset + PAD_TOP;
 
-    // SVG canvas dimensions
-    const svgW = PAD_LEFT + ROOT_W + H_SPAN + NODE_W + PAD_RIGHT;
-    const svgH = PAD_TOP + totalBranchH + PAD_TOP;
-
-    // Root anchor point (right edge mid)
     const rootX    = PAD_LEFT;
     const rootMidX = rootX + ROOT_W;
     const rootMidY = rootY + ROOT_H / 2;
-
-    // Branch column X
     const branchX  = PAD_LEFT + ROOT_W + H_SPAN;
 
-    // Build branch positions
-    const branchPositions = branchNodes.map((fork, i) => ({
-      fork,
-      x: branchX,
-      y: PAD_TOP + i * (NODE_H + V_GAP),
-    }));
+    // ---- Sibling bracket lines (vertical bar connecting sibling cards) ----
+    const siblingBrackets = groupOrder
+      .filter(({ group }) => group.length > 1)
+      .map(({ group }) => {
+        const positions = group.map((gf) => branchPositions.find((bp) => bp.fork.id === gf.id));
+        if (positions.some((p) => !p)) return null;
+        const topY    = positions[0].y;
+        const bottomY = positions[positions.length - 1].y + NODE_H;
+        const midY    = (topY + bottomY) / 2;
+        const bracketX = branchX - 10;
+        return (
+          <g key={`bracket-${group[0].id}`}>
+            {/* Vertical bracket bar */}
+            <line
+              x1={bracketX} y1={topY + 6}
+              x2={bracketX} y2={bottomY - 6}
+              stroke="#c5c5f0" strokeWidth="2" strokeLinecap="round"
+            />
+            {/* Horizontal tick to each card */}
+            {positions.map((pos) => (
+              <line
+                key={`tick-${pos.fork.id}`}
+                x1={bracketX} y1={pos.y + NODE_H / 2}
+                x2={branchX}  y2={pos.y + NODE_H / 2}
+                stroke="#c5c5f0" strokeWidth="1.5"
+              />
+            ))}
+            {/* Label: "Anchor group" */}
+            <text
+              x={bracketX - 2} y={midY}
+              fontSize={7.5} fontFamily="'Plus Jakarta Sans', sans-serif"
+              fontWeight="600" fill="#9090d0"
+              textAnchor="end" dominantBaseline="middle"
+              style={{ textTransform: 'uppercase', letterSpacing: '0.07em' }}
+            >
+              ⇄
+            </text>
+          </g>
+        );
+      })
+      .filter(Boolean);
 
-    // ---- Render edges ----
-    const edges = branchPositions.map(({ fork, x, y }) => {
-      const isActive = fork.is_active;
+    // ---- Bezier edges ----
+    const edges = branchPositions.map(({ fork, y }) => {
+      const isActive  = fork.is_active;
       const isHighlit = activeBranchId === fork.id;
-      const midY = y + NODE_H / 2;
-      // Bezier: start at root right-edge, curve to branch left-edge
-      const x1 = rootMidX;
-      const y1 = rootMidY;
-      const x2 = x;
-      const y2 = midY;
-      const cx1 = x1 + (x2 - x1) * 0.5;
-      const cy1 = y1;
-      const cx2 = x1 + (x2 - x1) * 0.5;
-      const cy2 = y2;
-
+      const midY      = y + NODE_H / 2;
+      const x1 = rootMidX, y1 = rootMidY;
+      const x2 = branchX,  y2 = midY;
+      const cx = x1 + (x2 - x1) * 0.5;
       return (
         <path
           key={`edge-${fork.id}`}
-          d={`M ${x1} ${y1} C ${cx1} ${cy1}, ${cx2} ${cy2}, ${x2} ${y2}`}
+          d={`M ${x1} ${y1} C ${cx} ${y1}, ${cx} ${y2}, ${x2} ${y2}`}
           fill="none"
           stroke={isHighlit ? '#6366F1' : isActive ? '#6366F1' : '#dde0e8'}
           strokeWidth={isHighlit ? 2.5 : isActive ? 2 : 1.5}
-          strokeOpacity={isHighlit ? 1 : isActive ? 0.8 : 0.5}
+          strokeOpacity={isHighlit ? 1 : isActive ? 0.8 : 0.4}
           strokeDasharray={isActive ? 'none' : '5 3'}
         />
       );
     });
 
-    // ---- Render branch nodes ----
-    const nodeCards = branchPositions.map(({ fork, x, y }) => {
-      const label       = statusLabel(fork);
-      const isHighlit   = activeBranchId === fork.id;
-      const isSelected  = selectedId === fork.id;
-      const isSwitchable= fork.status === 'resolved' && !fork.is_active;
-      const color       = STATUS_COLOR[label] || '#57606a';
-      const bg          = STATUS_BG[label]    || '#f4f5f7';
-      const border      = STATUS_BORDER[label]|| '#dde0e8';
-      const snippet     = fork.original_snippet
-        ? fork.original_snippet.slice(0, 32) + (fork.original_snippet.length > 32 ? '…' : '')
+    // ---- Branch node cards ----
+    const nodeCards = branchPositions.map(({ fork, y }) => {
+      const label         = statusLabel(fork);
+      const branchNum     = branchIndex.get(fork.id) ?? '?';
+      const isHighlit     = activeBranchId === fork.id;
+      const isSelected    = selectedId === fork.id;
+      const isSwitchable  = fork.status === 'resolved' && !fork.is_active;
+      const color         = STATUS_COLOR[label] || '#57606a';
+      const bg            = STATUS_BG[label]    || '#f4f5f7';
+      const border        = STATUS_BORDER[label] || '#dde0e8';
+      const originSnippet = fork.original_snippet
+        ? fork.original_snippet.slice(0, 28) + (fork.original_snippet.length > 28 ? '…' : '')
         : '(empty)';
-      const emphasized  = isHighlit || isSelected;
+      const emphasized    = isHighlit || isSelected;
 
       function handleClick() {
-        setSelectedId(emphasized && !isSwitchable ? null : fork.id);
-        setActiveBranchId(fork.id);
-        if (isSwitchable) handleSwitch(fork.id);
+        if (isSwitchable) {
+          handleSwitch(fork.id);
+        } else {
+          setSelectedId((prev) => (prev === fork.id ? null : fork.id));
+          setActiveBranchId(fork.id);
+        }
       }
 
       return (
         <g
           key={fork.id}
           id={`branch-node-${fork.id}`}
-          transform={`translate(${x}, ${y})`}
+          transform={`translate(${branchX}, ${y})`}
           onClick={handleClick}
           onKeyDown={(e) => e.key === 'Enter' && handleClick()}
           style={{ cursor: isSwitchable ? 'pointer' : 'default' }}
           role="button"
           tabIndex={0}
-          aria-label={isSwitchable ? `Switch to: ${snippet}` : `${label}: ${snippet}`}
+          aria-label={
+            isSwitchable
+              ? `Switch to Branch ${branchNum}: ${originSnippet}`
+              : `Branch ${branchNum} (${label}): ${originSnippet}`
+          }
           aria-pressed={isSelected}
         >
           {/* Highlight ring */}
           {emphasized && (
-            <rect
-              x={-3} y={-3}
-              width={NODE_W + 6} height={NODE_H + 6}
-              rx={12}
-              fill="none"
-              stroke="#6366F1"
-              strokeWidth="2.5"
-              opacity="0.75"
-            />
+            <rect x={-3} y={-3} width={NODE_W + 6} height={NODE_H + 6} rx={12}
+              fill="none" stroke="#6366F1" strokeWidth="2.5" opacity="0.75" />
           )}
 
           {/* Card background */}
           <rect
-            width={NODE_W}
-            height={NODE_H}
-            rx={10}
+            width={NODE_W} height={NODE_H} rx={10}
             fill={switching === fork.id ? '#e0e7ff' : emphasized ? '#eef0fc' : bg}
             stroke={switching === fork.id ? '#5b5bd6' : emphasized ? '#6366F1' : border}
             strokeWidth={emphasized ? 1.5 : 1}
@@ -240,37 +396,34 @@ export default function TreeView({ docId, onSwitch, activeBranchId: externalActi
           {/* Status bar on left edge */}
           <rect x={0} y={0} width={4} height={NODE_H} rx={2} fill={color} />
 
-          {/* Status pill */}
-          <rect x={12} y={8} width={52} height={15} rx={4}
+          {/* Branch number (top-left) */}
+          <text x={12} y={16} fontSize={9} fontFamily="'Plus Jakarta Sans', sans-serif"
+            fontWeight="700" fill="#5b5bd6" textAnchor="start" dominantBaseline="middle">
+            Branch {branchNum}
+          </text>
+
+          {/* Status pill (top-right) */}
+          <rect x={NODE_W - 66} y={8} width={52} height={15} rx={4}
             fill={bg} stroke={border} strokeWidth="1" />
-          <text x={38} y={17}
+          <text x={NODE_W - 40} y={17}
             fontSize={8.5} fontFamily="'Plus Jakarta Sans', sans-serif"
             fontWeight="700" fill={color}
             textAnchor="middle" dominantBaseline="middle"
-            style={{ textTransform: 'uppercase', letterSpacing: '0.05em' }}
-          >
+            style={{ textTransform: 'uppercase', letterSpacing: '0.05em' }}>
             {label}
           </text>
 
-          {/* Snippet text */}
-          <text x={12} y={40}
-            fontSize={10.5} fontFamily="'Plus Jakarta Sans', sans-serif"
-            fill="#1f2328"
-            textAnchor="start" dominantBaseline="middle"
-          >
-            {switching === fork.id ? 'Switching…' : snippet}
+          {/* Origin snippet */}
+          <text x={12} y={36} fontSize={9.5} fontFamily="'Plus Jakarta Sans', sans-serif"
+            fill="#57606a" textAnchor="start" dominantBaseline="middle">
+            {`From: "${originSnippet}"`}
           </text>
 
-          {/* Switch hint arrow */}
-          {isSwitchable && (
-            <text x={NODE_W - 10} y={NODE_H / 2}
-              fontSize={13} fontFamily="sans-serif"
-              fill="#6366F1" textAnchor="middle" dominantBaseline="middle"
-              opacity={0.8}
-            >
-              ↺
-            </text>
-          )}
+          {/* Action hint row */}
+          <text x={12} y={56} fontSize={10} fontFamily="'Plus Jakarta Sans', sans-serif"
+            fill="#1f2328" textAnchor="start" dominantBaseline="middle">
+            {switching === fork.id ? 'Switching…' : isSwitchable ? 'Click to switch ↺' : ''}
+          </text>
         </g>
       );
     });
@@ -278,26 +431,19 @@ export default function TreeView({ docId, onSwitch, activeBranchId: externalActi
     // ---- Root/trunk node ----
     const rootNode = (
       <g key="root-trunk" transform={`translate(${rootX}, ${rootY})`}>
-        {/* Card */}
-        <rect
-          width={ROOT_W} height={ROOT_H} rx={12}
-          fill="#f0f0fb" stroke="#5b5bd6" strokeWidth="1.5"
-        />
-        {/* Left accent */}
+        <rect width={ROOT_W} height={ROOT_H} rx={12}
+          fill="#f0f0fb" stroke="#5b5bd6" strokeWidth="1.5" />
         <rect x={0} y={0} width={5} height={ROOT_H} rx={3} fill="#5b5bd6" />
-        {/* Label */}
         <text x={ROOT_W / 2 + 3} y={ROOT_H / 2 - 8}
           fontSize={9} fontFamily="'Plus Jakarta Sans', sans-serif"
           fontWeight="700" fill="#5b5bd6"
           textAnchor="middle" dominantBaseline="middle"
-          style={{ textTransform: 'uppercase', letterSpacing: '0.07em' }}
-        >
+          style={{ textTransform: 'uppercase', letterSpacing: '0.07em' }}>
           ORIGINAL DRAFT
         </text>
         <text x={ROOT_W / 2 + 3} y={ROOT_H / 2 + 8}
           fontSize={10} fontFamily="'Plus Jakarta Sans', sans-serif"
-          fill="#3d3da8" textAnchor="middle" dominantBaseline="middle"
-        >
+          fill="#3d3da8" textAnchor="middle" dominantBaseline="middle">
           Main story trunk
         </text>
       </g>
@@ -306,24 +452,21 @@ export default function TreeView({ docId, onSwitch, activeBranchId: externalActi
     return (
       <div className="tree-svg-wrapper" ref={wrapperRef}>
         <svg
-          width={svgW}
-          height={svgH}
+          width={svgW} height={svgH}
           viewBox={`0 0 ${svgW} ${svgH}`}
           className="tree-svg"
           aria-label="Story decision tree diagram"
           style={{ minWidth: svgW }}
         >
-          {/* Edges behind nodes */}
           <g className="tree-svg__edges">{edges}</g>
-          {/* Root node */}
+          <g className="tree-svg__brackets">{siblingBrackets}</g>
           {rootNode}
-          {/* Branch nodes */}
           <g className="tree-svg__branches">{nodeCards}</g>
         </svg>
 
         {/* Detail card for selected branch */}
         {selectedId && (() => {
-          const sel = forks.find((f) => f.id === selectedId);
+          const sel = normForks.find((f) => f.id === selectedId);
           if (!sel) return null;
           return (
             <div className="tree-svg__detail">
@@ -345,62 +488,131 @@ export default function TreeView({ docId, onSwitch, activeBranchId: externalActi
   // -------------------------------------------------------------------------
   // Detailed List view
   // -------------------------------------------------------------------------
-  function renderListView(forks) {
-    const sorted = [...forks].sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+  function renderListView(rawForks) {
+    const sibGroups  = buildSiblingGroups(rawForks);
+    const normForks  = normaliseSiblingActivity(rawForks, sibGroups);
+    const chronological = [...normForks].sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+
+    // Build ordered list of sibling groups (same logic as visual tree)
+    const groupOrder = [];
+    const seen = new Set();
+    for (const fork of chronological) {
+      const key = siblingKey(fork);
+      if (seen.has(key)) { continue; }
+      seen.add(key);
+      const group = (sibGroups.get(key) ?? [fork])
+        .map((gf) => normForks.find((f) => f.id === gf.id) ?? gf)
+        .sort((a, b) => (b.is_active - a.is_active) || (new Date(a.created_at) - new Date(b.created_at)));
+      groupOrder.push({ key, group, isMulti: group.length > 1 });
+    }
+    // Singletons for proposed/failed
+    for (const fork of normForks) {
+      if (fork.status === 'proposed' || fork.status === 'failed') {
+        const sk = `singleton-${fork.id}`;
+        if (!seen.has(sk)) {
+          seen.add(sk);
+          groupOrder.push({ key: sk, group: [fork], isMulti: false });
+        }
+      }
+    }
+
+    let globalIdx = 0;
+
     return (
       <div className="tree-list">
-        {sorted.map((fork) => {
-          const label = statusLabel(fork);
-          const color = STATUS_COLOR[label];
-          const isHighlighted = activeBranchId === fork.id;
+        {groupOrder.map(({ key, group, isMulti }) => {
+          const originText = group[0].original_snippet
+            ? `"${group[0].original_snippet.slice(0, 60)}${group[0].original_snippet.length > 60 ? '…' : ''}"`
+            : '(empty)';
+
           return (
             <div
-              key={fork.id}
-              id={`branch-node-${fork.id}`}
-              className={`tree-list__card tree-list__card--${label}${isHighlighted ? ' tree-list__card--highlighted' : ''}`}
-              onClick={() => setActiveBranchId(fork.id)}
+              key={key}
+              className={`tree-list__group${isMulti ? ' tree-list__group--multi' : ''}`}
             >
-              <div className="tree-list__card-header">
-                <span className="tree-list__status-dot" style={{ background: color }} aria-hidden="true" />
-                <span className="tree-list__status-label" style={{ color }}>{label}</span>
-                <span className="tree-list__date">
-                  {new Date(fork.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
-                </span>
-              </div>
-
-              <div className="tree-list__diff">
-                <div className="tree-list__diff-col tree-list__diff-col--original">
-                  <span className="tree-list__diff-label">Original</span>
-                  <p className="tree-list__diff-text">{String(fork.original_snippet || '')}</p>
-                </div>
-                <div className="tree-list__diff-col tree-list__diff-col--alternative">
-                  <span className="tree-list__diff-label">Alternative</span>
-                  <p className="tree-list__diff-text">
-                    {fork.branch_content
-                      ? String(fork.branch_content)
-                      : <em className="tree-list__empty">Generation failed</em>}
-                  </p>
-                </div>
-              </div>
-
-              {fork.why && (
-                <div className="tree-list__why">
-                  <span className="tree-list__why-label">WHY THIS CHANGE</span>
-                  <p className="tree-list__why-text">{String(fork.why)}</p>
+              {/* Sibling group header — only shown when there are 2+ siblings */}
+              {isMulti && (
+                <div className="tree-list__group-header">
+                  <span className="tree-list__group-anchor-label">
+                    ⇄ {group.length} variants at same position
+                  </span>
+                  <span className="tree-list__group-origin">{originText}</span>
                 </div>
               )}
 
-              {fork.status === 'resolved' && !fork.is_active && (
-                <div className="tree-list__actions">
-                  <button
-                    className="btn btn--primary btn--sm"
-                    onClick={(e) => { e.stopPropagation(); handleSwitch(fork.id); }}
-                    disabled={switching === fork.id}
+              {group.map((fork) => {
+                globalIdx += 1;
+                const myIdx  = globalIdx;
+                const label  = statusLabel(fork);
+                const color  = STATUS_COLOR[label];
+                const isHighlighted = activeBranchId === fork.id;
+                const origin = fork.original_snippet
+                  ? `"${fork.original_snippet.slice(0, 60)}${fork.original_snippet.length > 60 ? '…' : ''}"`
+                  : '(empty)';
+
+                return (
+                  <div
+                    key={fork.id}
+                    id={`branch-node-${fork.id}`}
+                    className={`tree-list__card tree-list__card--${label}${isHighlighted ? ' tree-list__card--highlighted' : ''}${isMulti ? ' tree-list__card--sibling' : ''}`}
+                    onClick={() => setActiveBranchId(fork.id)}
                   >
-                    {switching === fork.id ? 'Switching…' : 'Switch to this branch'}
-                  </button>
-                </div>
-              )}
+                    <div className="tree-list__card-header">
+                      <span className="tree-list__branch-num">Branch {myIdx}</span>
+                      <span className="tree-list__status-dot" style={{ background: color }} aria-hidden="true" />
+                      <span className="tree-list__status-label" style={{ color }}>{label}</span>
+                      {isMulti && fork.is_active ? (
+                        <span className="tree-list__active-badge">✓ active variant</span>
+                      ) : null}
+                      <span className="tree-list__date">
+                        {new Date(fork.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
+                      </span>
+                    </div>
+
+                    {/* Origin row — only show for non-multi (multi shows it in group header) */}
+                    {!isMulti && (
+                      <div className="tree-list__origin">
+                        <span className="tree-list__origin-label">Origin</span>
+                        <span className="tree-list__origin-text">{origin}</span>
+                      </div>
+                    )}
+
+                    <div className="tree-list__diff">
+                      <div className="tree-list__diff-col tree-list__diff-col--original">
+                        <span className="tree-list__diff-label">Original</span>
+                        <p className="tree-list__diff-text">{String(fork.original_snippet || '')}</p>
+                      </div>
+                      <div className="tree-list__diff-col tree-list__diff-col--alternative">
+                        <span className="tree-list__diff-label">Alternative</span>
+                        <p className="tree-list__diff-text">
+                          {fork.branch_content
+                            ? String(fork.branch_content)
+                            : <em className="tree-list__empty">Generation failed</em>}
+                        </p>
+                      </div>
+                    </div>
+
+                    {fork.why && (
+                      <div className="tree-list__why">
+                        <span className="tree-list__why-label">WHY THIS CHANGE</span>
+                        <p className="tree-list__why-text">{String(fork.why)}</p>
+                      </div>
+                    )}
+
+                    {fork.status === 'resolved' && !fork.is_active && (
+                      <div className="tree-list__actions">
+                        <button
+                          className="btn btn--primary btn--sm"
+                          onClick={(e) => { e.stopPropagation(); handleSwitch(fork.id); }}
+                          disabled={!!switching}
+                        >
+                          {switching === fork.id ? 'Switching…' : 'Switch to this branch'}
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           );
         })}
@@ -430,6 +642,18 @@ export default function TreeView({ docId, onSwitch, activeBranchId: externalActi
 
   return (
     <div className="tree-view">
+      {/* ── Switch error banner ── */}
+      {switchError && (
+        <div className="tree-view__switch-error" role="alert">
+          <span>{switchError}</span>
+          <button
+            className="tree-view__switch-error-close"
+            onClick={() => setSwitchError(null)}
+            aria-label="Dismiss error"
+          >✕</button>
+        </div>
+      )}
+
       {/* ── Toolbar: mode toggle + legend ── */}
       <div className="tree-view__toolbar">
         <div className="tree-view__mode-toggle">
@@ -447,7 +671,6 @@ export default function TreeView({ docId, onSwitch, activeBranchId: externalActi
           </button>
         </div>
 
-        {/* Status legend — in toolbar header, z-10, never overlaps nodes */}
         <div className="tree-view__legend" style={{ zIndex: 10, position: 'relative' }}>
           <span className="legend-item legend-item--active">active</span>
           <span className="legend-item legend-item--inactive">inactive</span>

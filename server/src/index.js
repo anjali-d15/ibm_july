@@ -5,10 +5,10 @@ require('dotenv').config({ path: require('path').join(__dirname, '..', '..', '.e
 const express = require('express');
 const cors = require('cors');
 const crypto = require('node:crypto');
-const { getDb, createUser, findUserByCredentials, findUserById,
+const { getDb, repairActiveFlags, createUser, findUserByCredentials, findUserById,
         seedStarterManuscripts, ensureLegacyData } = require('./db');
 const { resolveDocument } = require('./resolve');
-const { generateAlternative, draftWhySummary, checkConsistency } = require('./granite');
+const { generateAlternative, draftWhySummary, checkConsistency, suggestChips } = require('./granite');
 const { v4: uuidv4 } = require('uuid');
 
 const app = express();
@@ -314,14 +314,48 @@ app.get('/document/:id', (req, res) => {
 
 /**
  * GET /document/:id/tree
+ *
+ * Before returning forks, runs repairActiveFlags() so the client always
+ * receives at most one is_active=1 fork per (document_id, anchor_start,
+ * anchor_end) group, regardless of what stale data exists in the DB.
  */
 app.get('/document/:id/tree', (req, res) => {
   const db = getDb();
   const doc = db.prepare('SELECT id FROM documents WHERE id = ?').get(req.params.id);
   if (!doc) return res.status(404).json({ error: 'Document not found' });
+
+  // Repair stale is_active flags for this document before returning.
+  // Uses a scoped version of the global repair so only this doc is touched.
+  try {
+    db.prepare(
+      `UPDATE forks
+         SET is_active = 0, updated_at = datetime('now')
+       WHERE document_id = ?
+         AND is_active = 1
+         AND id NOT IN (
+           SELECT id FROM forks keeper
+            WHERE keeper.is_active = 1
+              AND keeper.document_id  = forks.document_id
+              AND keeper.anchor_start = forks.anchor_start
+              AND keeper.anchor_end   = forks.anchor_end
+              AND keeper.updated_at   = (
+                    SELECT MAX(f3.updated_at)
+                      FROM forks f3
+                     WHERE f3.is_active = 1
+                       AND f3.document_id  = forks.document_id
+                       AND f3.anchor_start = forks.anchor_start
+                       AND f3.anchor_end   = forks.anchor_end
+                  )
+         )`
+    ).run(req.params.id);
+  } catch (repairErr) {
+    // Non-fatal — log and continue with whatever data exists
+    console.warn('[tree] active-flag repair failed:', repairErr.message);
+  }
+
   const forks = db
     .prepare(
-      `SELECT id, parent_fork_id, anchor_start, anchor_end,
+      `SELECT id, document_id, parent_fork_id, anchor_start, anchor_end,
               original_snippet, branch_content, why,
               status, is_active, created_at, updated_at,
               consistency_verdict, consistency_note
@@ -405,6 +439,20 @@ app.post('/document/:id/generate-alternative', ensureSession, rateLimitMiddlewar
 
   const forkId = uuidv4();
   try {
+    // Before inserting the new (proposed) fork, mark any existing active sibling
+    // at the same anchor as inactive. This ensures that as soon as a new branch
+    // is proposed, only the pending one is highlighted — older siblings are inactive.
+    // Siblings share (document_id, parent_fork_id, anchor_start, anchor_end).
+    db.prepare(
+      `UPDATE forks
+         SET is_active = 0, updated_at = datetime('now')
+       WHERE document_id = ?
+         AND anchor_start = ?
+         AND anchor_end   = ?
+         AND (parent_fork_id IS ? OR (parent_fork_id IS NULL AND ? IS NULL))`
+    ).run(docId, anchor_start, anchor_end,
+          segment_fork_id ?? null, segment_fork_id ?? null);
+
     db.prepare(
       `INSERT INTO forks
          (id, document_id, parent_fork_id, anchor_start, anchor_end,
@@ -443,24 +491,36 @@ app.post('/fork/:id/approve', (req, res) => {
   const db = getDb();
   const { id: forkId } = req.params;
   const fork = db
-    .prepare(`SELECT id, document_id, anchor_start, anchor_end, original_snippet, branch_content FROM forks WHERE id = ?`)
+    .prepare(`SELECT id, document_id, parent_fork_id, anchor_start, anchor_end, original_snippet, branch_content FROM forks WHERE id = ?`)
     .get(forkId);
   if (!fork) return res.status(404).json({ error: 'Fork not found' });
   const docId = fork.document_id;
 
   try {
-    db.exec('BEGIN');
+    // Step 1: Deactivate ALL siblings at the same anchor FIRST.
+    // Must run before activating the new fork to avoid tripping the
+    // uq_one_active_per_anchor unique index (which allows only one is_active=1
+    // per document+anchor_start+anchor_end).
+    // Siblings share the same (document_id, parent_fork_id, anchor_start, anchor_end).
     db.prepare(
-      `UPDATE forks SET status = 'resolved', is_active = 1, updated_at = datetime('now') WHERE id = ?`
+      `UPDATE forks
+         SET is_active = 0, updated_at = datetime('now')
+       WHERE document_id = ?
+         AND anchor_start = ?
+         AND anchor_end   = ?
+         AND (parent_fork_id IS ? OR (parent_fork_id IS NULL AND ? IS NULL))
+         AND id != ?`
+    ).run(docId, fork.anchor_start, fork.anchor_end,
+          fork.parent_fork_id, fork.parent_fork_id, forkId);
+
+    // Step 2: Activate this fork and mark it resolved.
+    db.prepare(
+      `UPDATE forks
+         SET status = 'resolved', is_active = 1, updated_at = datetime('now')
+       WHERE id = ?`
     ).run(forkId);
-    db.prepare(
-      `UPDATE forks SET is_active = 0, status = 'resolved', updated_at = datetime('now')
-       WHERE document_id = ? AND anchor_start = ? AND anchor_end = ? AND id != ?`
-    ).run(docId, fork.anchor_start, fork.anchor_end, forkId);
-    db.exec('COMMIT');
   } catch (err) {
-    try { db.exec('ROLLBACK'); } catch (_) {}
-    console.error('[approve] transaction failed:', err.message);
+    console.error('[approve] DB update failed:', err.message);
     return res.status(500).json({ error: 'Failed to approve fork' });
   }
 
@@ -548,8 +608,11 @@ app.post('/document/:id/force-unlock', (req, res) => {
 app.post('/fork/:id/switch', (req, res) => {
   const db = getDb();
   const forkId = req.params.id;
+  if (!forkId) return res.status(400).json({ error: 'forkId is required' });
+
+  // Step 1 — verify fork exists and is eligible
   const fork = db
-    .prepare(`SELECT id, document_id, anchor_start, anchor_end, status FROM forks WHERE id = ?`)
+    .prepare(`SELECT id, document_id, parent_fork_id, anchor_start, anchor_end, status FROM forks WHERE id = ?`)
     .get(forkId);
   if (!fork) return res.status(404).json({ error: 'Fork not found' });
   if (fork.status !== 'resolved') {
@@ -561,20 +624,56 @@ app.post('/fork/:id/switch', (req, res) => {
   if (pending) {
     return res.status(409).json({ error: 'Document is locked: a fork is pending review' });
   }
+
+  // Step 2 — two separate prepare().run() calls.
+  // node:sqlite's DatabaseSync corrupts internal iterator state when db.exec()
+  // is called with multi-statement strings more than once in the same process.
+  // Plain prepare().run() calls are safe, repeatable, and auto-committed.
   try {
-    db.exec('BEGIN');
-    db.prepare(`UPDATE forks SET is_active = 1, updated_at = datetime('now') WHERE id = ?`).run(forkId);
+    // 2a. Deactivate all siblings at the same anchor FIRST (avoid unique index violation).
+    // Siblings share (document_id, parent_fork_id, anchor_start, anchor_end).
     db.prepare(
-      `UPDATE forks SET is_active = 0, updated_at = datetime('now')
-       WHERE document_id = ? AND anchor_start = ? AND anchor_end = ? AND id != ?`
-    ).run(fork.document_id, fork.anchor_start, fork.anchor_end, forkId);
-    db.exec('COMMIT');
+      `UPDATE forks
+         SET is_active = 0, updated_at = datetime('now')
+       WHERE document_id = ?
+         AND anchor_start = ?
+         AND anchor_end   = ?
+         AND (parent_fork_id IS ? OR (parent_fork_id IS NULL AND ? IS NULL))
+         AND id != ?`
+    ).run(fork.document_id, fork.anchor_start, fork.anchor_end,
+          fork.parent_fork_id, fork.parent_fork_id, forkId);
+
+    // 2b. Activate the target fork
+    db.prepare(
+      `UPDATE forks SET is_active = 1, updated_at = datetime('now') WHERE id = ?`
+    ).run(forkId);
   } catch (err) {
-    try { db.exec('ROLLBACK'); } catch (_) {}
-    console.error('[switch] transaction failed:', err.message);
-    return res.status(500).json({ error: 'Failed to switch branch' });
+    console.error('[switch] DB update failed:', err.message);
+    return res.status(500).json({ ok: false, error: 'Failed to switch branch' });
   }
-  res.json({ ok: true });
+
+  // Step 3 — re-fetch segments and the updated forks list so the client can
+  // immediately re-render both the editor and the decision tree without a
+  // second round-trip.
+  let segments;
+  try {
+    segments = resolveDocument(fork.document_id) ?? [];
+  } catch (resolveErr) {
+    console.error('[switch] resolve failed after switch:', resolveErr.message);
+    segments = [];
+  }
+
+  const updatedForks = db
+    .prepare(
+      `SELECT id, document_id, parent_fork_id, anchor_start, anchor_end,
+              original_snippet, branch_content, why,
+              status, is_active, created_at, updated_at,
+              consistency_verdict, consistency_note
+       FROM forks WHERE document_id = ? ORDER BY created_at ASC`
+    )
+    .all(fork.document_id);
+
+  res.json({ ok: true, activeForkId: forkId, segments, forks: updatedForks });
 });
 
 // ---------------------------------------------------------------------------
@@ -617,6 +716,30 @@ app.post('/fork/:id/why', ensureSession, rateLimitMiddleware, async (req, res) =
 });
 
 // ---------------------------------------------------------------------------
+// POST /suggest-chips  — toolbar AI chip generation
+// ---------------------------------------------------------------------------
+app.post('/suggest-chips', ensureSession, rateLimitMiddleware, async (req, res) => {
+  const startTime = Date.now();
+  const rawText = req.body?.selected_text;
+  const selected_text = sanitizeUserInput(rawText);
+
+  if (typeof selected_text !== 'string' || selected_text.trim() === '') {
+    return res.status(400).json({ error: 'selected_text must be a non-empty string' });
+  }
+  if (selected_text.length > 2000) {
+    return res.status(400).json({ error: 'selected_text too long (max 2000 chars)' });
+  }
+
+  try {
+    const chips = await suggestChips(selected_text.trim());
+    return res.json({ chips, latencyMs: Date.now() - startTime });
+  } catch (err) {
+    console.error('[suggest-chips] error:', err.message);
+    return res.status(502).json({ error: `Chip generation failed: ${err.message}` });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // POST /document/:id/check-consistency
 // ---------------------------------------------------------------------------
 app.post('/document/:id/check-consistency', async (req, res) => {
@@ -639,8 +762,19 @@ app.post('/document/:id/check-consistency', async (req, res) => {
     )
     .all(docId);
   if (decisions.length === 0) return res.json({ findings: [] });
+
+  // Collect fork ids that have already been reviewed so we can skip them
+  const reviewedIds = new Set(
+    db.prepare(
+      `SELECT id FROM forks
+       WHERE document_id = ? AND consistency_verdict IS NOT NULL`
+    ).all(docId).map((r) => r.id)
+  );
+
   try {
-    const findings = await checkConsistency(resolvedText, decisions);
+    const allFindings = await checkConsistency(resolvedText, decisions);
+    // Filter out findings that were already resolved/dismissed in a prior check
+    const findings = allFindings.filter((f) => !reviewedIds.has(f.fork_id));
     return res.json({ findings });
   } catch (err) {
     console.error('[check-consistency] Granite error:', err.message);
@@ -694,5 +828,8 @@ const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
   const db = getDb();
   ensureLegacyData(db);           // keep old hardcoded doc working
+  // Run active-flag repair after ensureLegacyData (which may seed rows) so any
+  // seeded conflicts are also cleaned up at startup.
+  repairActiveFlags(db);
   console.log(`Throughline server on http://localhost:${PORT}`);
 });

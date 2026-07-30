@@ -19,7 +19,6 @@ const TOUR_KEY        = 'throughline_seen_tour';
 
 export default function App() {
   // ── Auth state ─────────────────────────────────────────────────────────────
-  // Start as checked=true if no token — skip the /auth/me round-trip entirely
   const [authChecked, setAuthChecked]           = useState(false);
   const [currentUser, setCurrentUser]           = useState(null); // { id, username, is_guest }
 
@@ -47,6 +46,7 @@ export default function App() {
   const [isSubmitting, setIsSubmitting]         = useState(false);
   const [showHelp, setShowHelp]                 = useState(false);
   const [activeBranchId, setActiveBranchId]     = useState(null);
+  const [highlightForkId, setHighlightForkId]   = useState(null);
 
   const editorRef = useRef(null);
 
@@ -54,8 +54,6 @@ export default function App() {
   const branchCount    = segments ? segments.filter((s) => s.fork_id != null).length : 0;
 
   // ── Auth bootstrap ─────────────────────────────────────────────────────────
-  // Only attempt to restore session if there's a stored auth hint. If not,
-  // show the Auth Modal immediately — no spinner on cold load.
   useEffect(() => {
     const hasHint = !!localStorage.getItem('throughline_authed');
     if (!hasHint) {
@@ -66,7 +64,7 @@ export default function App() {
       .then((r) => (r.ok ? r.json() : Promise.reject()))
       .then(({ user }) => { if (user) setCurrentUser(user); })
       .catch(() => {
-        // Cookie expired / invalid — clear the hint so next load skips the call
+        // Cookie expired / invalid — clear hint
         localStorage.removeItem('throughline_authed');
       })
       .finally(() => setAuthChecked(true));
@@ -224,14 +222,35 @@ export default function App() {
     setQuickInstruction(null);
   }
 
-  async function handleBranchSwitch() {
-    try { await refreshSegments(); } catch (err) { setGlobalError(err.message); }
-    setActiveView('editor');
+  async function handleBranchSwitch(switchedForkId, switchedSegments) {
+    // 1. Reset highlight ID so React registers the new highlight trigger cleanly
+    setHighlightForkId(null);
+
+    // 2. Apply resolved segments to state and editor
+    if (switchedSegments && switchedSegments.length > 0) {
+      setSegments(switchedSegments);
+      if (editorRef.current) {
+        editorRef.current.setContent(switchedSegments.map((s) => s.text).join(''));
+      }
+    } else {
+      try {
+        await refreshSegments();
+      } catch (err) {
+        setGlobalError(err.message);
+      }
+    }
+
+    // 3. Queue highlighting and navigate back to the editor view
+    setTimeout(() => {
+      if (switchedForkId) {
+        setHighlightForkId(switchedForkId);
+      }
+      setActiveView('editor');
+    }, 60);
   }
 
   async function handleLogout() {
     await fetch('/auth/logout', { method: 'POST', credentials: 'include' }).catch(() => {});
-    // Full state reset — clear persisted data so new session starts clean
     localStorage.clear();
     setCurrentUser(null);
     setDocId(LEGACY_DOC_ID);
@@ -251,17 +270,14 @@ export default function App() {
     setIsSubmitting(false);
     setFocusMode(false);
     setSidebarCollapsed(false);
-    // authChecked stays true — we want to immediately show auth screen, not flash spinner
   }
 
   // ── Render guards ──────────────────────────────────────────────────────────
 
-  // Still checking session cookie
   if (!authChecked) {
     return <div style={{ padding: '3rem', color: '#57606a', textAlign: 'center' }}>Loading…</div>;
   }
 
-  // Not logged in → show auth screen
   if (!currentUser) {
     return (
       <AuthModal
@@ -276,12 +292,9 @@ export default function App() {
   const isLocked = uiPhase === 'reviewing';
   const hasValidSelection = selection && !selection.crossSegment && selection.selected_text;
 
-  // Telemetry info for header badge
   const latencyMs   = telemetry?.latencyMs;
   const httpStatus  = telemetry?.status;
 
-  // ── Shell wrapper — always rendered once auth passes ──────────
-  // Header is mounted here so it persists across loadError / loading states.
   return (
     <div className={`app${sidebarCollapsed ? ' app--sidebar-collapsed' : ' app--sidebar-open'}`}>
       {/* Global error banner */}
@@ -386,7 +399,7 @@ export default function App() {
         </header>
       )}
 
-      {/* ── Document load error / loading states (shown below header) ── */}
+      {/* ── Document load error / loading states ── */}
       {loadError && (
         <div className="app__doc-error">
           <strong>Failed to load document:</strong> {loadError}
@@ -451,6 +464,8 @@ export default function App() {
               onSelectionChange={setSelection}
               focusMode={focusMode}
               onToggleFocus={() => setFocusMode((f) => !f)}
+              highlightForkId={highlightForkId}
+              onHighlightDone={() => setHighlightForkId(null)}
             />
           </EditorErrorBoundary>
 

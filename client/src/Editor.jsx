@@ -15,15 +15,15 @@ const AUTOSAVE_DEBOUNCE_MS = 500;
  *  - onSelectionChange(selectionInfo | null) callback for parent to wire into fork UI
  *  - locked prop: disables editing while a fork is pending
  *  - focusMode: distraction-free fullscreen write mode
- *  - telemetry: live latency/status badge from last AI call
  */
 const Editor = forwardRef(function Editor(
-  { docId, initialContent, segments, locked, onSelectionChange, focusMode, onToggleFocus },
+  { docId, initialContent, segments, locked, onSelectionChange, focusMode, onToggleFocus,
+    highlightForkId, onHighlightDone },
   ref
 ) {
   const [saveStatus, setSaveStatus] = useState('idle');
   const saveTimerRef = useRef(null);
-  const pendingSaveRef = useRef(null); // holds the in-flight save promise
+  const pendingSaveRef = useRef(null);
 
   // ---------------------------------------------------------------------------
   // Autosave
@@ -79,7 +79,7 @@ const Editor = forwardRef(function Editor(
   useImperativeHandle(ref, () => ({ flushSave, setContent }), [flushSave, setContent]);
 
   // ---------------------------------------------------------------------------
-  // Tiptap editor
+  // Tiptap editor setup
   // ---------------------------------------------------------------------------
   const editorRef = useRef(null);
   const shellRef = useRef(null);
@@ -130,7 +130,7 @@ const Editor = forwardRef(function Editor(
         if (nativeSel && nativeSel.rangeCount > 0) {
           selectionRect = nativeSel.getRangeAt(0).getBoundingClientRect();
         }
-      } catch (_) { /* ignore — non-critical */ }
+      } catch (_) { /* ignore */ }
 
       onSelectionChange({
         crossSegment: false,
@@ -143,22 +143,88 @@ const Editor = forwardRef(function Editor(
     },
   });
 
-  // Keep editor editable state in sync with locked prop
+  // Sync editor editable state with locked prop
   useEffect(() => {
     if (editor) editor.setEditable(!locked);
   }, [editor, locked]);
 
-  // Store ref for flushSave to access
+  // Store editor instance ref
   useEffect(() => {
     if (editor) editorRef.current = editor;
   }, [editor]);
 
-  // Cleanup timer on unmount
+  // Cleanup autosave timer
   useEffect(() => {
     return () => {
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     };
   }, []);
+
+  // ---------------------------------------------------------------------------
+  // Branch-switch pulse highlight (Double-frame delay + Fallback targeting)
+  // ---------------------------------------------------------------------------
+  const highlightTimerRef = useRef(null);
+
+  useEffect(() => {
+    if (!highlightForkId || !shellRef.current) return;
+
+    if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
+
+    console.log('👉 [Highlight] Triggered for fork ID:', highlightForkId);
+
+    // Double requestAnimationFrame ensures Tiptap's DOM rendering cycle finishes
+    let frameId1 = requestAnimationFrame(() => {
+      let frameId2 = requestAnimationFrame(() => {
+        const proseMirrorEl = shellRef.current?.querySelector('.ProseMirror');
+        if (!proseMirrorEl) {
+          console.warn('❌ [Highlight] ProseMirror DOM element not found');
+          return;
+        }
+
+        const seg = segments?.find((s) => s.fork_id === highlightForkId);
+        const paragraphs = Array.from(proseMirrorEl.querySelectorAll('p'));
+
+        let targetPara = null;
+
+        if (seg && seg.text) {
+          const cleanSegText = seg.text.replace(/\s+/g, ' ').trim();
+          for (const p of paragraphs) {
+            const cleanParaText = p.textContent.replace(/\s+/g, ' ').trim();
+            if (
+              cleanParaText.length > 0 &&
+              (cleanParaText.includes(cleanSegText) || cleanSegText.includes(cleanParaText))
+            ) {
+              targetPara = p;
+              break;
+            }
+          }
+        }
+
+        // Fallback target: first paragraph or ProseMirror wrapper
+        const highlightTarget = targetPara || paragraphs[0] || proseMirrorEl;
+        console.log('✅ [Highlight] Applying animation to target:', highlightTarget);
+
+        // Reset and trigger CSS pulse animation
+        highlightTarget.classList.remove('branch-switched-highlight');
+        void highlightTarget.offsetWidth; // Force reflow
+        highlightTarget.classList.add('branch-switched-highlight');
+
+        highlightTarget.scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+        highlightTimerRef.current = setTimeout(() => {
+          highlightTarget.classList.remove('branch-switched-highlight');
+          if (onHighlightDone) onHighlightDone();
+        }, 3000);
+      });
+
+      return () => cancelAnimationFrame(frameId2);
+    });
+
+    return () => {
+      cancelAnimationFrame(frameId1);
+      if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
+    };
+  }, [highlightForkId, segments, onHighlightDone]);
 
   // Escape key exits focus mode
   useEffect(() => {
@@ -175,7 +241,6 @@ const Editor = forwardRef(function Editor(
 
   return (
     <div ref={shellRef} className={`editor-shell${locked ? ' editor-shell--locked' : ''}${focusMode ? ' editor-shell--focus' : ''}`}>
-      {/* Focus mode: show a minimal bar with save status and exit button */}
       {focusMode && (
         <header className="editor-header editor-header--focus-only">
           <div className="editor-header__left">
@@ -206,7 +271,6 @@ const Editor = forwardRef(function Editor(
           </div>
         </header>
       )}
-      {/* Non-focus mode: show save status as a subtle floating indicator */}
       {!focusMode && (
         <div className="editor-save-indicator" aria-live="polite">
           <span className="save-status" style={{ color: statusColor }}>{statusLabel}</span>

@@ -30,6 +30,7 @@ export default function ConsistencyPanel({ docId, onClose }) {
   const [verdict, setVerdict]   = useState(null);        // 'intentional' | 'flagged' | null
   const [note, setNote]         = useState('');
   const [saving, setSaving]     = useState(false);
+  const [dismissing, setDismissing] = useState(false);
   const [saveError, setSaveError] = useState(null);
   const [loadError, setLoadError] = useState(null);
 
@@ -101,6 +102,28 @@ export default function ConsistencyPanel({ docId, onClose }) {
       setPhase('done');
     } else {
       setStep(step + 1);
+    }
+  }
+
+  /** Dismiss the current item without a verdict — marks it so it won't reappear */
+  async function handleDismiss() {
+    setDismissing(true);
+    setSaveError(null);
+    try {
+      const finding = findings[step];
+      // Use 'intentional' as the persisted verdict for a dismissed/skipped item
+      // so it is filtered out by the server on subsequent re-checks.
+      await fetch(`/fork/${finding.fork_id}/consistency`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ verdict: 'intentional', note: 'Dismissed — skipped during review' }),
+      });
+    } catch (_) {
+      // Dismiss is best-effort; advance even if the save fails
+    } finally {
+      setDismissing(false);
+      advance();
     }
   }
 
@@ -217,13 +240,21 @@ export default function ConsistencyPanel({ docId, onClose }) {
           <div className="cpanel__footer">
             {phase === 'review' ? (
               <>
-                <button className="cpanel__skip-btn" onClick={handleSkipAll} disabled={saving}>
+                <button className="cpanel__skip-btn" onClick={handleSkipAll} disabled={saving || dismissing}>
                   Skip all
+                </button>
+                <button
+                  className="cpanel__dismiss-btn"
+                  onClick={handleDismiss}
+                  disabled={saving || dismissing}
+                  title="Dismiss this item — it won't appear in future checks"
+                >
+                  {dismissing ? 'Dismissing…' : 'Dismiss'}
                 </button>
                 <button
                   className="cpanel__next-btn"
                   onClick={() => verdict ? handleAnswer(verdict) : null}
-                  disabled={saving || !verdict}
+                  disabled={saving || dismissing || !verdict}
                 >
                   {saving ? 'Saving…' : step + 1 >= findings.length ? 'Finish →' : 'Next →'}
                 </button>

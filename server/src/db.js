@@ -71,6 +71,51 @@ const MIGRATIONS = [
 ];
 
 // ---------------------------------------------------------------------------
+// Active-flag repair
+//
+// Ensures the is_active=1 invariant: for every (document_id, anchor_start,
+// anchor_end) group, at most ONE fork may have is_active=1.
+//
+// If stale data has multiple active siblings (e.g., from before the
+// sibling-deactivation logic was in place), this keeps the most recently
+// updated one and sets all others to is_active=0.
+//
+// Safe to call on every startup — it is a no-op when data is already clean.
+// Uses a single prepare().run() call (safe for node:sqlite DatabaseSync).
+// ---------------------------------------------------------------------------
+const REPAIR_ACTIVE_FLAGS_SQL = `
+  UPDATE forks
+     SET is_active = 0, updated_at = datetime('now')
+   WHERE is_active = 1
+     AND id NOT IN (
+       SELECT id FROM forks keeper
+        WHERE keeper.is_active = 1
+          AND keeper.document_id  = forks.document_id
+          AND keeper.anchor_start = forks.anchor_start
+          AND keeper.anchor_end   = forks.anchor_end
+          AND keeper.updated_at   = (
+                SELECT MAX(f3.updated_at)
+                  FROM forks f3
+                 WHERE f3.is_active = 1
+                   AND f3.document_id  = forks.document_id
+                   AND f3.anchor_start = forks.anchor_start
+                   AND f3.anchor_end   = forks.anchor_end
+              )
+     )
+`;
+
+function repairActiveFlags(database) {
+  try {
+    const result = database.prepare(REPAIR_ACTIVE_FLAGS_SQL).run();
+    if (result.changes > 0) {
+      console.log(`[db] repairActiveFlags: fixed ${result.changes} stale is_active flags`);
+    }
+  } catch (err) {
+    console.warn('[db] repairActiveFlags failed (non-fatal):', err.message);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Starter manuscript content
 // ---------------------------------------------------------------------------
 const STARTER_MANUSCRIPTS = [
@@ -125,6 +170,9 @@ function getDb() {
     db.exec('PRAGMA busy_timeout = 5000');
     db.exec(SCHEMA);
     runMigrations(db);
+    // Repair any stale is_active conflicts left by older code paths.
+    // No-op when data is already clean.
+    repairActiveFlags(db);
   }
   return db;
 }
@@ -237,6 +285,7 @@ function ensureLegacyData(database) {
 
 module.exports = {
   getDb,
+  repairActiveFlags,
   createUser,
   findUserByCredentials,
   findUserById,

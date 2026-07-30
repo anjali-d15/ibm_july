@@ -82,9 +82,28 @@
 .sel-toolbar__btn:nth-child(2):hover { border-color: #60b4f5; color: #93d4ff; }
 .sel-toolbar__btn:nth-child(3):hover { border-color: #c084fc; color: #e0b4ff; }
 
-.sel-toolbar__icon {
-  font-size: 0.85rem;
-  line-height: 1;
+/* AI-chip variant — slightly warmer accent */
+.sel-toolbar__btn--ai {
+  border-color: #2e3340;
+}
+.sel-toolbar__btn--ai:hover {
+  border-color: #9f7cf0 !important;
+  color: #c9b3ff !important;
+}
+
+/* AI badge — tiny pill inside the chip */
+.sel-toolbar__ai-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: #3d3060;
+  color: #c9b3ff;
+  font-size: 0.58rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  border-radius: 4px;
+  padding: 0.05rem 0.3rem;
+  line-height: 1.4;
   flex-shrink: 0;
 }
 
@@ -96,4 +115,40 @@
 .sel-toolbar__btn + .sel-toolbar__btn {
   border-left: 1px solid #2e3340;
   border-left-color: transparent; /* use gap + hover border instead */
+}
+
+/* ── Loading state ─────────────────────────────────────────── */
+
+/* Pulse the whole toolbar subtly while AI fetch is in-flight */
+.sel-toolbar--loading {
+  animation: sel-toolbar-pulse 1.2s ease-in-out infinite alternate;
+}
+
+@keyframes sel-toolbar-pulse {
+  from { border-color: #2e3340; }
+  to   { border-color: #5a5280; }
+}
+
+/* Spinner element shown at the right end of the toolbar */
+.sel-toolbar__loading {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+}
+
+.sel-toolbar__spinner {
+  display: block;
+  width: 13px;
+  height: 13px;
+  border: 2px solid #3d4257;
+  border-top-color: #9f7cf0;
+  border-radius: 50%;
+  animation: sel-spinner-rotate 0.7s linear infinite;
+}
+
+@keyframes sel-spinner-rotate {
+  to { transform: rotate(360deg); }
 }

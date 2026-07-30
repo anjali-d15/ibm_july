@@ -200,10 +200,14 @@ async function generateAlternative(selectedText, instruction) {
 // ---------------------------------------------------------------------------
 
 const WHY_SYSTEM = [
-  'You are a precise writing assistant.',
+  'You are a senior narrative editor and dramatic analyst.',
+  'When comparing an original passage to an alternative, you evaluate the broader narrative impact:',
+  'character motivations and psychological depth, pacing and tension, atmosphere, and plot consequences.',
   'You always respond with valid JSON only — no prose, no markdown, no explanation outside the JSON.',
   'Your response must be a single JSON object with exactly this key: "why".',
-  'The value of "why" is one or two sentences explaining the rationale, as a plain string.',
+  'The value of "why" is one or two precise, insightful sentences about the narrative effect of the change,',
+  'as a plain string. Focus on what meaningfully shifts — character agency, emotional register, plot stakes,',
+  'or thematic direction — not surface-level wording differences.',
 ].join(' ');
 
 /**
@@ -215,10 +219,12 @@ const WHY_SYSTEM = [
 function buildWhyPrompt(originalSnippet, branchContent) {
   return (
     `Your response must be a JSON object with exactly this structure:\n` +
-    `{"why": "<your one-to-two sentence explanation here>"}\n\n` +
+    `{"why": "<your one-to-two sentence narrative analysis here>"}\n\n` +
     `Example of a correct response:\n` +
-    `{"why": "The alternative shifts the emotional register from anxious to resolute, giving the character more agency."}\n\n` +
-    `Explain in one or two sentences why an author might have preferred the alternative passage over the original.\n\n` +
+    `{"why": "The alternative shifts the character from passive witness to active instigator, raising the moral stakes and accelerating the plot toward a confrontation the original passage delayed."}\n\n` +
+    `Analyze how the alternative passage changes the narrative compared to the original.\n` +
+    `Focus on: character motivation or agency, emotional/atmospheric shift, pacing impact, or plot consequences.\n` +
+    `Do NOT summarize the text — explain the narrative effect of choosing one over the other.\n\n` +
     `Original:\n${originalSnippet}\n\n` +
     `Alternative:\n${branchContent}`
   );
@@ -287,7 +293,7 @@ async function draftWhySummary(originalSnippet, branchContent) {
 // ---------------------------------------------------------------------------
 
 const CONSISTENCY_SYSTEM = [
-  'You are a precise editorial assistant.',
+  'You are a meticulous story editor specializing in plot, timeline, and narrative fact continuity.',
   'You always respond with valid JSON only — no prose, no markdown, no explanation outside the JSON.',
   'Your response must be a single JSON object with exactly this key: "findings".',
   'The value of "findings" is an array (possibly empty) of objects each with "fork_id" (string) and "question" (string).',
@@ -301,17 +307,22 @@ const CONSISTENCY_SYSTEM = [
  */
 function buildConsistencyPrompt(resolvedText, decisions) {
   const decisionList = decisions
-    .map((d, i) => `Decision ${i + 1} (fork_id: "${d.id}"):\n  Why: ${d.why}`)
+    .map((d, i) => `Decision ${i + 1} (fork_id: "${d.id}"):\n  Narrative rationale: ${d.why}`)
     .join('\n\n');
 
   return (
     `Your response must be a JSON object with exactly this structure:\n` +
     `{"findings": [{"fork_id": "...", "question": "..."}, ...]}\n\n` +
     `An empty array means no contradictions were found.\n\n` +
-    `You are reviewing a document alongside the author's recorded decisions.\n` +
-    `For each decision, check whether the current document text contradicts the stated intent.\n` +
+    `You are a story editor reviewing a manuscript alongside the author's recorded narrative decisions.\n` +
+    `For each decision, check whether the current document text contradicts or undermines the stated intent.\n` +
+    `Specifically look for:\n` +
+    `- Plot contradictions: a character acts in a way that conflicts with an earlier established decision or outcome\n` +
+    `- Timeline mismatches: events occur in an order inconsistent with earlier text (e.g., an object is used before it was obtained)\n` +
+    `- Fact continuity errors: physical details, character traits, locations, or item states that contradict earlier descriptions\n` +
+    `- Tone/motivation drift: a character's emotional state or motivation contradicts what was established in the recorded decision\n` +
     `Only flag contradictions in content that follows the decision chronologically.\n` +
-    `For each contradiction found, include the fork_id and a concise clarifying question.\n\n` +
+    `For each contradiction found, include the fork_id and a specific clarifying question that helps the author resolve the issue.\n\n` +
     `Recorded decisions (ordered oldest first):\n${decisionList}\n\n` +
     `Current document:\n${resolvedText}`
   );
@@ -362,6 +373,81 @@ async function checkConsistency(resolvedText, decisions) {
   return findings;
 }
 
+// ---------------------------------------------------------------------------
+// Toolbar chip suggestions
+// ---------------------------------------------------------------------------
+
+const CHIPS_SYSTEM = [
+  'You are a creative writing assistant generating concise action suggestions for a narrative editor toolbar.',
+  'You always respond with valid JSON only — no prose, no markdown, no explanation outside the JSON.',
+  'Your response must be a single JSON object with exactly this key: "chips".',
+  'The value of "chips" is an array of exactly 3 objects.',
+  'Each object has two string fields: "label" (short verb phrase, max 5 words, no character names) and "instruction" (specific rewrite directive for the AI, max 25 words).',
+].join(' ');
+
+/**
+ * Build 3 contextual chip suggestions from a selected passage.
+ * @param {string} selectedText
+ * @returns {string}
+ */
+function buildChipsPrompt(selectedText) {
+  return (
+    `Your response must be a JSON object with exactly this structure:\n` +
+    `{"chips": [{"label": "...", "instruction": "..."}, {"label": "...", "instruction": "..."}, {"label": "...", "instruction": "..."}]}\n\n` +
+    `Analyze this passage and suggest exactly 3 specific, creative rewrite directions for an author.\n` +
+    `Focus on narrative impact: character decisions, emotional stakes, pacing, plot consequences, or tone.\n` +
+    `Labels must be concise verb phrases (no character names, max 5 words).\n` +
+    `Instructions must be specific directives that guide an AI rewriter (max 25 words each).\n\n` +
+    `Passage:\n${selectedText}\n\n` +
+    `Return only the JSON object.`
+  );
+}
+
+/**
+ * Generate 3 contextual toolbar chip suggestions for a selected passage.
+ * @param {string} selectedText
+ * @returns {Promise<{label: string, instruction: string}[]>}
+ */
+async function suggestChips(selectedText) {
+  const userMessage = buildChipsPrompt(selectedText);
+  const cacheKey = `chips:${userMessage}`;
+
+  const cached = devCacheGet(cacheKey);
+  if (cached !== undefined) {
+    console.log('[granite] chips cache hit');
+    return cached;
+  }
+
+  const rawText = await callChat(
+    [
+      { role: 'system', content: CHIPS_SYSTEM },
+      { role: 'user', content: userMessage },
+    ],
+    200
+  );
+
+  let parsed;
+  try {
+    parsed = JSON.parse(rawText.trim());
+  } catch {
+    const jsonMatch = rawText.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      try { parsed = JSON.parse(jsonMatch[0]); } catch { /* fall through */ }
+    }
+  }
+
+  if (!parsed || !Array.isArray(parsed.chips)) {
+    throw new Error(`Granite chips response missing "chips" array: ${rawText.slice(0, 200)}`);
+  }
+
+  const chips = parsed.chips
+    .filter((c) => typeof c.label === 'string' && typeof c.instruction === 'string')
+    .slice(0, 3);
+
+  devCacheSet(cacheKey, chips);
+  return chips;
+}
+
 module.exports = {
   generateAlternative,
   buildPrompt,
@@ -369,4 +455,5 @@ module.exports = {
   buildWhyPrompt,
   checkConsistency,
   buildConsistencyPrompt,
+  suggestChips,
 };

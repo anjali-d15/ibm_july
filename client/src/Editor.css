@@ -1,7 +1,7 @@
 .editor-shell {
   display: flex;
   flex-direction: column;
-  min-height: calc(100vh - 48px); /* subtract root header */
+  min-height: calc(100vh - 48px);
 }
 
 /* Save status floating indicator (non-focus mode) */
@@ -28,7 +28,6 @@
   justify-content: space-between;
 }
 
-/* Left zone: brand + doc switcher — shrinks if needed, left-aligned */
 .editor-header__left {
   display: flex;
   align-items: center;
@@ -38,7 +37,6 @@
   padding-right: 0.5rem;
 }
 
-/* Center zone: view tabs pill — always centred */
 .editor-header__center {
   display: flex;
   align-items: center;
@@ -50,7 +48,6 @@
   flex-shrink: 0;
 }
 
-/* Brand lockup: icon + wordmark */
 .editor-brand {
   display: flex;
   align-items: center;
@@ -61,7 +58,7 @@
 .editor-brand__icon {
   width: 1.55rem;
   height: 1.55rem;
-  color: #5b5bd6;          /* indigo-600 equivalent */
+  color: #5b5bd6;
   flex-shrink: 0;
 }
 
@@ -97,7 +94,6 @@
   letter-spacing: -0.01em;
 }
 
-/* Right zone: telemetry + focus + user + logout + granite — right-aligned */
 .editor-header__right {
   display: flex;
   align-items: center;
@@ -110,7 +106,6 @@
   overflow: hidden;
 }
 
-/* Username chip */
 .editor-header__user {
   font-family: 'Plus Jakarta Sans', -apple-system, sans-serif;
   font-size: 0.72rem;
@@ -121,7 +116,6 @@
   max-width: 100px;
 }
 
-/* Logout button */
 .editor-header__logout {
   background: transparent;
   border: 1px solid #dde0e8;
@@ -162,7 +156,6 @@
   padding: 0.25rem 0.7rem 0.25rem 0.5rem;
 }
 
-/* Pulsing green dot — two layers: outer ping + inner solid */
 .granite-badge__dot {
   position: relative;
   width: 0.5rem;
@@ -176,10 +169,9 @@
   position: absolute;
   inset: 0;
   border-radius: 50%;
-  background: #10b981;   /* emerald-500 */
+  background: #10b981;
 }
 
-/* Outer ring that pings */
 .granite-badge__dot::before {
   animation: badge-ping 1.6s cubic-bezier(0, 0, 0.2, 1) infinite;
   opacity: 0.6;
@@ -195,7 +187,7 @@
   font-family: 'Plus Jakarta Sans', -apple-system, sans-serif;
   font-size: 0.72rem;
   font-weight: 600;
-  color: #065f46;          /* emerald-900 */
+  color: #065f46;
   white-space: nowrap;
 }
 
@@ -210,21 +202,19 @@
   padding: 0.2rem 0.75rem;
   font-family: 'Plus Jakarta Sans', -apple-system, sans-serif;
   font-size: 0.7rem;
-  min-width: 0;                 /* allow badge itself to shrink */
+  min-width: 0;
   max-width: 100%;
 }
 
 .telemetry-badge__model {
   color: #57606a;
   font-weight: 500;
-  /* Truncate the long model ID on narrow screens */
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   max-width: 180px;
 }
 
-/* On wider screens the label can expand to its natural width */
 @media (min-width: 640px) {
   .telemetry-badge__model {
     max-width: none;
@@ -274,7 +264,6 @@
   color: #3d3da8;
 }
 
-/* Focus mode — full-screen distraction-free */
 .editor-shell--focus {
   position: fixed;
   inset: 0;
@@ -306,7 +295,6 @@
   background: #f4f5f7;
 }
 
-/* Paper card — the white content surface */
 .editor-paper {
   width: 100%;
   max-width: 720px;
@@ -321,7 +309,6 @@
   width: 100%;
 }
 
-/* Tiptap / ProseMirror — Lora serif, comfortable prose rhythm */
 .editor-content .ProseMirror {
   outline: none;
   font-family: 'Lora', Georgia, 'Times New Roman', serif;
@@ -334,20 +321,19 @@
 
 .editor-content .ProseMirror p {
   margin: 0 0 1.15em 0;
+  transition: background-color 0.3s ease, box-shadow 0.3s ease;
 }
 
 .editor-content .ProseMirror p:last-child {
   margin-bottom: 0;
 }
 
-/* Locked state — dim when a fork is pending */
 .editor-shell--locked .editor-content .ProseMirror {
   opacity: 0.5;
   pointer-events: none;
   user-select: none;
 }
 
-/* Placeholder */
 .editor-content .ProseMirror.is-editor-empty::before {
   content: 'Start writing your story…';
   color: #c0c7d0;
@@ -357,7 +343,7 @@
   height: 0;
 }
 
-/* ── View tabs (inside editor-header__center) ──────────────────── */
+/* ── View tabs ─────────────────────────────────────────────────── */
 .view-tab {
   background: transparent;
   border: none;
@@ -375,7 +361,6 @@
 }
 
 .view-tab__text--short { display: none; }
-
 .view-tab:last-child { border-right: none; }
 
 .view-tab:hover:not(:disabled) {
@@ -406,9 +391,34 @@
   color: #3d3da8;
 }
 
-/* Narrow screens: abbreviate tab labels */
 @media (max-width: 820px) {
   .view-tab__text       { display: none; }
   .view-tab__text--short { display: inline; }
   .view-tab { padding: 0.3rem 0.55rem; font-size: 0.74rem; }
+}
+
+/* ── High-specificity branch switch highlight pulse ───────────── */
+@keyframes branchPulse {
+  0% {
+    background-color: #fef08a !important; /* Bright glowing yellow */
+    box-shadow: 0 0 16px rgba(234, 179, 8, 0.8) !important;
+    border-left: 4px solid #eab308 !important;
+  }
+  50% {
+    background-color: #fef08a !important;
+    box-shadow: 0 0 12px rgba(234, 179, 8, 0.6) !important;
+  }
+  100% {
+    background-color: transparent !important;
+    box-shadow: none !important;
+    border-left: 4px solid transparent !important;
+  }
+}
+
+.editor-content .ProseMirror p.branch-switched-highlight,
+.editor-content .ProseMirror .branch-switched-highlight {
+  animation: branchPulse 3s ease-out forwards !important;
+  transition: all 0.3s ease;
+  padding-left: 0.5rem !important;
+  border-radius: 4px;
 }

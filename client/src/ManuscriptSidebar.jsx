@@ -67,16 +67,25 @@ export default function ManuscriptSidebar({ segments, branchCount, collapsed, on
   const wordCount = fullText.trim() ? fullText.trim().split(/\s+/).length : 0;
   const readingTimeMins = Math.max(1, Math.ceil(wordCount / 200));
 
-  // Build a simple outline: group segments by whether they're branch or root
+  // Build a simple outline: group segments by whether they're branch or root.
+  // Assign sequential branch numbers only to branch segments (not root segments).
+  let branchCounter = 0;
   const outlineItems = segments
-    ? segments.filter((s) => s.text.trim().length > 0).map((s, i) => ({
-        key: i,
-        forkId: s.fork_id || null,
-        label: s.fork_id
-          ? `Branch ${i + 1}: "${s.text.slice(0, 50).replace(/\n/g, ' ')}"`
-          : `Root ${i + 1}: "${s.text.slice(0, 50).replace(/\n/g, ' ')}"`,
-        isBranch: !!s.fork_id,
-      }))
+    ? segments.filter((s) => s.text.trim().length > 0).map((s, i) => {
+        const isBranch = !!s.fork_id;
+        if (isBranch) branchCounter += 1;
+        const branchNum = isBranch ? branchCounter : null;
+        const excerpt = `"${s.text.slice(0, 50).replace(/\n/g, ' ')}${s.text.length > 50 ? '…' : ''}"`;
+        return {
+          key: i,
+          forkId: s.fork_id || null,
+          label: isBranch
+            ? `Branch ${branchNum}: ${excerpt}`
+            : `Root: ${excerpt}`,
+          isBranch,
+          branchNum,
+        };
+      })
     : [];
 
   return (
